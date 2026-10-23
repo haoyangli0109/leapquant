@@ -1,0 +1,7 @@
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=0.9\linewidth]{figures/compensator-tokens-paper.pdf}
+    \caption{Per-window state reconstruction with Compensator Tokens. The FP32 state is split into a low-bit quantized residual, a few higher-precision Compensator Tokens that capture its dominant large-magnitude structure, and the buffered real-token updates of the window. The Compensator Tokens absorb dominant outliers, flattening the residual's row $\ell_2$ norms and making it easier to quantize.}
+    \vspace{-1.5em}
+    \label{fig:ghost-tokens}
+\end{figure}

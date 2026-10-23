@@ -1,0 +1,9 @@
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=\linewidth]{figures/intro_serving_cost.pdf}
+    \caption{Recurrent-state access is a major cost of LLM serving.
+    (a) Decode-time breakdown for GLM-5.3-Flash-NVFP4 on the B200 GPU at batch size 256. The share spent on linear attention stays roughly constant as context length grows.
+    (b) GPU memory footprint for Qwen3.5-9B with prefix caching, assuming one linear attention state per 1{,}024 cached tokens.}
+    \vspace{-1em}
+    \label{fig:intro}
+\end{figure}

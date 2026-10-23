@@ -1,0 +1,7 @@
+\section*{Reproducibility Statement}
+
+\method{} requires neither training nor calibration data, and every model and benchmark in this paper is publicly available.
+Section~\ref{sec:method} and Appendix~\ref{app:derivations} give the complete formulation of per-window quantization, Compensator Tokens, and residual smoothing together with their derivations, and Appendix~\ref{app:instances} shows how other linear attention models fit the same update form.
+Section~\ref{sec:eval-setup} specifies the models, benchmarks, configuration of \method{} (window length, number of Compensator Tokens, and residual format), and hardware, while Appendix~\ref{app:eval-details} lists the sampling parameters and evaluation sets for each model.
+Appendix~\ref{app:full-results} reports the results of every baseline format we evaluate.
+We will release our vLLM implementation and TileLang kernels upon publication.

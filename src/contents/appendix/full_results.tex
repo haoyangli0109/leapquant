@@ -1,0 +1,64 @@
+\section{Full Downstream Results}
+\label{app:full-results}
+
+Table~\ref{tab:full-results} extends Table~\ref{tab:downstream} with GSM8K and with every direct quantization format and adapted method we evaluate at 8, 6, and 4 bits.
+Direct quantization formats are listed before the adapted methods in each group, and all baselines re-quantize the state at every decode step.
+\method{} uses the configurations of Section~\ref{sec:eval-setup} at each bit width.
+
+\begin{table}[h]
+  \centering
+    \caption{Full downstream performance (\%, higher is better). Best scores in each column within each bit width are in bold.}
+  \label{tab:full-results}
+  \renewcommand{\arraystretch}{1.15}
+  \newcommand{\bmk}[1]{\multicolumn{1}{c}{\makebox[1.2em][l]{\rotatebox[origin=lb]{45}{\scriptsize #1}}}}
+  \setlength{\tabcolsep}{0pt}%
+  \newcommand{\fullbody}{%
+    \toprule
+    & \multicolumn{5}{c}{Qwen3.5-9B} & \multicolumn{5}{c}{Qwen3.5-35B-A3B} & \multicolumn{5}{c}{Kimi-Linear-48B-A3B} \\
+    \cmidrule(lr){2-6}\cmidrule(lr){7-11}\cmidrule(lr){12-16}
+    Method & \bmk{GSM} & \bmk{AIME} & \bmk{GPQA} & \bmk{LCB} & \bmk{MMLU} & \bmk{GSM} & \bmk{AIME} & \bmk{GPQA} & \bmk{LCB} & \bmk{MMLU} & \bmk{GSM} & \bmk{AIME} & \bmk{GPQA} & \bmk{LCB} & \bmk{MMLU} \\
+    \midrule
+    FP32 & 96.1 & 87.9 & 81.3 & 64.1 & 83.3 & 96.7 & 91.5 & 84.7 & 75.6 & 85.9 & 92.1 & 67.5 & 70.3 & 41.4 & 72.4 \\
+    \midrule
+    BF16 & 94.9 & 72.1 & 66.2 & 49.6 & 81.0 & 96.6 & 85.8 & 79.3 & 67.2 & 85.2 & 92.1 & 64.3 & 68.1 & 41.0 & 64.0 \\
+    \midrule
+    \multicolumn{16}{@{}l}{\textit{8-bit methods}} \\
+    \rowcolor{oursrow}\textbf{Ours} & \textbf{96.3} & \textbf{87.9} & \textbf{81.8} & \textbf{64.1} & \textbf{83.8} & \textbf{96.5} & \textbf{91.0} & \textbf{83.9} & \textbf{76.1} & \textbf{85.8} & 92.0 & \textbf{68.3} & \textbf{69.8} & 41.3 & 72.1 \\
+    FP8 per-tensor & 79.2 & 14.6 & 34.3 & 21.4 & 42.6 & 86.7 & 29.6 & 39.9 & 26.7 & 56.4 & 91.8 & 25.6 & 46.6 & 16.0 & 57.0 \\
+    FP8 per-channel & 84.2 & 0.8 & 13.6 & 11.5 & 46.6 & 76.9 & 0.0 & 5.6 & 8.4 & 36.6 & 91.6 & 35.4 & 57.6 & 16.5 & 65.5 \\
+    FP8 per-group & 71.2 & 0.0 & 2.5 & 2.3 & 25.8 & 67.2 & 0.0 & 1.5 & 2.3 & 24.9 & 91.7 & 25.3 & 47.6 & 15.8 & 63.5 \\
+    MXFP8 & 67.9 & 7.1 & 24.2 & 15.3 & 32.2 & 80.6 & 29.6 & 36.4 & 29.8 & 45.5 & 91.4 & 43.5 & 50.3 & 23.4 & 67.0 \\
+    INT8 per-tensor & 38.5 & 0.0 & 3.0 & 3.1 & 25.1 & 10.2 & 0.0 & 3.5 & 1.5 & 8.5 & 89.9 & 5.3 & 31.3 & 8.4 & 54.8 \\
+    INT8 per-channel & 53.5 & 7.1 & 26.8 & 9.2 & 44.3 & 16.5 & 0.0 & 0.0 & 3.1 & 6.8 & 91.8 & 52.8 & 65.8 & 35.5 & 64.5 \\
+    \addlinespace[2pt]
+    KVQuant & 95.1 & 74.6 & 70.2 & 59.5 & 82.4 & 95.8 & 76.3 & 69.7 & 44.3 & 83.5 & 92.0 & 66.6 & 69.7 & \textbf{42.1} & 65.0 \\
+    QuaRot & 93.1 & 49.6 & 57.1 & 38.2 & 73.1 & 80.7 & 32.9 & 36.4 & 15.3 & 56.0 & \textbf{92.6} & 63.3 & 69.2 & 36.6 & \textbf{73.1} \\
+    TurboQuant & 94.8 & 70.8 & 61.1 & 45.0 & 80.5 & 82.9 & 10.4 & 22.7 & 15.3 & 52.7 & 92.3 & 57.5 & 69.2 & 41.2 & 69.0 \\
+    \midrule
+    \multicolumn{16}{@{}l}{\textit{6-bit methods}} \\
+    \rowcolor{oursrow}\textbf{Ours} & \textbf{95.5} & \textbf{85.8} & \textbf{79.8} & \textbf{59.5} & \textbf{81.7} & \textbf{95.2} & \textbf{88.8} & \textbf{83.8} & \textbf{68.7} & \textbf{79.5} & 91.8 & \textbf{66.1} & \textbf{66.2} & \textbf{35.9} & \textbf{73.4} \\
+    NVFP6 & 66.7 & 0.4 & 18.7 & 12.2 & 28.3 & 75.4 & 13.8 & 34.3 & 25.2 & 46.3 & 92.5 & 30.8 & 52.0 & 25.2 & 67.4 \\
+    MXFP6 & 15.9 & 0.0 & 1.0 & 3.1 & 8.7 & 37.1 & 0.0 & 7.1 & 9.2 & 23.6 & 91.8 & 37.1 & 53.5 & 19.1 & 66.7 \\
+    INT6 per-channel & 50.6 & 0.0 & 5.6 & 1.5 & 23.5 & 1.0 & 0.0 & 3.0 & 0.0 & 3.9 & 91.3 & 22.9 & 50.0 & 13.7 & 64.2 \\
+    \addlinespace[2pt]
+    KVQuant & 79.3 & 4.2 & 23.2 & 13.7 & 40.5 & 59.8 & 0.0 & 10.1 & 2.3 & 21.6 & 91.9 & 55.0 & \textbf{66.2} & 29.8 & 71.8 \\
+    QuaRot & 51.9 & 0.0 & 10.1 & 3.1 & 26.6 & 8.8 & 0.0 & 0.5 & 0.0 & 2.9 & 92.5 & 25.4 & 43.9 & 17.6 & 64.2 \\
+    TurboQuant & 87.5 & 27.5 & 29.8 & 16.0 & 61.2 & 54.1 & 0.4 & 5.1 & 4.6 & 16.1 & \textbf{92.7} & 48.8 & 64.7 & \textbf{35.9} & 72.7 \\
+    \midrule
+    \multicolumn{16}{@{}l}{\textit{4-bit methods}} \\
+    \rowcolor{oursrow}\textbf{Ours} & \textbf{95.9} & \textbf{58.1} & \textbf{65.7} & \textbf{34.0} & \textbf{80.2} & \textbf{96.0} & \textbf{59.2} & \textbf{57.6} & \textbf{37.4} & \textbf{81.4} & \textbf{92.0} & \textbf{67.9} & \textbf{69.2} & \textbf{40.5} & \textbf{73.4} \\
+    NVFP4 & 0.4 & 0.0 & 0.0 & 0.0 & 2.0 & 0.4 & 0.0 & 0.0 & 0.0 & 0.3 & 85.1 & 0.0 & 6.4 & 0.8 & 9.7 \\
+    MXFP4 & 4.6 & 0.0 & 5.1 & 0.0 & 7.4 & 3.9 & 0.0 & 4.5 & 0.8 & 5.5 & 87.7 & 4.2 & 26.9 & 8.7 & 53.1 \\
+    INT4 per-channel & 0.2 & 0.0 & 6.6 & 0.0 & 5.8 & 0.2 & 0.0 & 0.0 & 0.0 & 0.7 & 78.1 & 0.0 & 7.1 & 0.8 & 28.8 \\
+    \addlinespace[2pt]
+    KVQuant & 1.1 & 0.0 & 0.0 & 0.0 & 1.0 & 0.0 & 0.0 & 0.0 & 0.0 & 0.0 & 89.6 & 4.2 & 19.7 & 2.3 & 46.9 \\
+    QuaRot & 0.6 & 0.0 & 0.5 & 0.0 & 1.6 & 0.0 & 0.0 & 0.0 & 0.0 & 0.0 & 84.3 & 0.8 & 15.2 & 1.5 & 38.2 \\
+    TurboQuant & 41.6 & 3.3 & 26.8 & 13.0 & 47.4 & 0.0 & 0.0 & 0.0 & 0.0 & 0.3 & 90.3 & 24.2 & 63.1 & 26.7 & 69.5 \\
+    \bottomrule
+  }%
+  \sbox0{\begin{tabular}{@{}l*{15}{r}@{}}\fullbody\end{tabular}}%
+  \setlength{\tabcolsep}{\dimexpr(\linewidth-\wd0)/30\relax}%
+  \begin{tabular}{@{}l*{15}{r}@{}}
+  \fullbody
+  \end{tabular}
+\end{table}

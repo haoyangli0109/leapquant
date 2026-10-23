@@ -1,0 +1,41 @@
+\begin{table}[t]
+  \centering
+  \setlength{\tabcolsep}{3pt}
+  \caption{Downstream performance (\%, higher is better). Best scores in each column within the 8-bit, 6-bit, and 4-bit groups are in bold.}
+  \renewcommand{\arraystretch}{1.1}
+  \newcommand{\bmk}[1]{\multicolumn{1}{c}{\rotatebox[origin=lb]{45}{\scriptsize #1}}}
+  \newcommand{\gp}{8pt}
+  \newcommand{\bmkg}[1]{\multicolumn{1}{>{\hspace{\gp}}c}{\rotatebox[origin=lb]{45}{\scriptsize #1}}}
+  \scalebox{0.9}{%
+  \begin{tabular}{@{}l>{\hspace{\gp}}r*{3}{r}>{\hspace{\gp}}r*{3}{r}>{\hspace{\gp}}r*{3}{r}>{\hspace{\gp}}r@{}}
+    \toprule
+    & \multicolumn{4}{>{\hspace{\gp}}c}{Qwen3.5-9B} & \multicolumn{4}{>{\hspace{\gp}}c}{Qwen3.5-35B-A3B} & \multicolumn{4}{>{\hspace{\gp}}c}{Kimi-Linear-48B-A3B} & \\
+    \cmidrule(l{\gp}r){2-5}\cmidrule(l{\gp}r){6-9}\cmidrule(l{\gp}r){10-13}
+    Method & \bmkg{AIME} & \bmk{GPQA} & \bmk{LCB} & \bmk{MMLU} & \bmkg{AIME} & \bmk{GPQA} & \bmk{LCB} & \bmk{MMLU} & \bmkg{AIME} & \bmk{GPQA} & \bmk{LCB} & \bmk{MMLU} & \multicolumn{1}{>{\hspace{\gp}}r}{Avg.} \\
+    \midrule
+    FP32 & 87.9 & 81.3 & 64.1 & 83.3 & 91.5 & 84.7 & 75.6 & 85.9 & 67.5 & 70.3 & 41.4 & 72.4 & 75.5 \\
+    \midrule
+    BF16 & 72.1 & 66.2 & 49.6 & 81.0 & 85.8 & 79.3 & 67.2 & 85.2 & 64.3 & 68.1 & 41.0 & 64.0 & 68.7 \\
+    \midrule
+    \multicolumn{14}{@{}l}{\textit{8-bit methods}} \\
+    \rowcolor{oursrow}\textbf{Ours} & \textbf{87.9} & \textbf{81.8} & \textbf{64.1} & \textbf{83.8} & \textbf{91.0} & \textbf{83.9} & \textbf{76.1} & \textbf{85.8} & \textbf{68.3} & \textbf{69.8} & 41.3 & 72.1 & \textbf{75.5} \\
+    FP8 & 14.6 & 34.3 & 21.4 & 42.6 & 29.6 & 39.9 & 26.7 & 56.4 & 25.6 & 46.6 & 16.0 & 57.0 & 34.2 \\
+    INT8 & 7.1 & 26.8 & 9.2 & 44.3 & 0.0 & 0.0 & 3.1 & 6.8 & 52.8 & 65.8 & 35.5 & 64.5 & 26.3 \\
+    KVQuant & 74.6 & 70.2 & 59.5 & 82.4 & 76.3 & 69.7 & 44.3 & 83.5 & 66.6 & 69.7 & \textbf{42.1} & 65.0 & 67.0 \\
+    QuaRot & 49.6 & 57.1 & 38.2 & 73.1 & 32.9 & 36.4 & 15.3 & 56.0 & 63.3 & 69.2 & 36.6 & \textbf{73.1} & 50.1 \\
+    TurboQuant & 70.8 & 61.1 & 45.0 & 80.5 & 10.4 & 22.7 & 15.3 & 52.7 & 57.5 & 69.2 & 41.2 & 69.0 & 49.6 \\
+    \midrule
+    \multicolumn{14}{@{}l}{\textit{6-bit methods}} \\
+    \rowcolor{oursrow}\textbf{Ours} & \textbf{85.8} & \textbf{79.8} & \textbf{59.5} & \textbf{81.7} & \textbf{88.8} & \textbf{83.8} & \textbf{68.7} & \textbf{79.5} & \textbf{66.1} & \textbf{66.2} & \textbf{35.9} & \textbf{73.4} & \textbf{72.4} \\
+    TurboQuant & 27.5 & 29.8 & 16.0 & 61.2 & 0.4 & 5.1 & 4.6 & 16.1 & 48.8 & 64.7 & \textbf{35.9} & 72.7 & 31.9 \\
+    NVFP6 & 0.4 & 18.7 & 12.2 & 28.3 & 13.8 & 34.3 & 25.2 & 46.3 & 30.8 & 52.0 & 25.2 & 67.4 & 29.6 \\
+    \midrule
+    \multicolumn{14}{@{}l}{\textit{4-bit methods}} \\
+    \rowcolor{oursrow}\textbf{Ours} & \textbf{58.1} & \textbf{65.7} & \textbf{34.0} & \textbf{80.2} & \textbf{59.2} & \textbf{57.6} & \textbf{37.4} & \textbf{81.4} & \textbf{67.9} & \textbf{69.2} & \textbf{40.5} & \textbf{73.4} & \textbf{60.4} \\
+    TurboQuant & 3.3 & 26.8 & 13.0 & 47.4 & 0.0 & 0.0 & 0.0 & 0.3 & 24.2 & 63.1 & 26.7 & 69.5 & 22.9 \\
+    MXFP4 & 0.0 & 5.1 & 0.0 & 7.4 & 0.0 & 4.5 & 0.8 & 5.5 & 4.2 & 26.9 & 8.7 & 53.1 & 9.7 \\
+    \bottomrule
+  \end{tabular}%
+  }
+  \label{tab:downstream}
+\end{table}

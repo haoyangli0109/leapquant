@@ -1,0 +1,94 @@
+
+\documentclass{article}
+\usepackage{iclr2027_conference,times}
+
+\input{math_commands}
+
+\usepackage{hyperref}
+\usepackage{url}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{colortbl}
+\definecolor{oursrow}{HTML}{E4EEFB}
+\usepackage{graphicx}
+\usepackage{wrapfig}
+\usepackage{xspace}
+
+\newcommand{\method}{{LeapQuant}}
+\newcommand{\sys}{\method\xspace}
+\newcommand{\resulttodo}[1]{[\textit{#1}]}
+
+\title{\method{}: Efficient Linear Attention with Accurate Recurrent State Quantization
+}
+
+\author{
+\begin{minipage}[t]{0.96\textwidth}
+Yi Pan$^1$\thanks{Equal contribution}\quad Haocheng Xi$^1$\footnotemark[1]\quad Kan Zhu$^2$\quad Xingyang Li$^3$\quad Yibo Wu$^4$\\[0.2em]
+Mayank Mishra$^1$\quad Hongtao Zhang$^2$\quad William X.Zheng$^1$\quad Baris Kasikci$^2$\\[0.2em]
+Song Han$^{3,5}$\quad Kurt Keutzer$^1$\quad Rishabh Iyer$^1$\quad Ion Stoica$^1$ \\
+\end{minipage}\\
+$^1$UC Berkeley, $^2$University of Washington,  $^3$MIT, $^4$Perplexity AI, $^5$NVIDIA
+}
+
+\newcommand{\fix}{\marginpar{FIX}}
+\newcommand{\new}{\marginpar{NEW}}
+
+\newcommand{\hlinline}[2]{$#2$}
+\newcommand{\hfp}[1]{#1}
+\newcommand{\hq}[1]{#1}
+\newcommand{\hrec}[1]{#1}
+\newcommand{\htr}[1]{#1}
+\newcommand{\hsm}[1]{#1}
+\newcommand{\hsq}[1]{#1}
+
+\DeclareMathOperator{\Diag}{Diag}
+\newcommand{\quant}{\operatorname{\mathtt{quant}}}
+\newcommand{\dequant}{\operatorname{\mathtt{dequant}}}
+\newcommand{\DQ}{\dequant}
+\newcommand{\tk}{\tilde{k}}
+\newcommand{\Sh}{\hat{S}}
+
+\setlength{\abovecaptionskip}{3pt}
+\setlength{\belowcaptionskip}{0pt}
+\setlength{\abovedisplayskip}{4pt plus 1pt minus 2pt}
+\setlength{\belowdisplayskip}{4pt plus 1pt minus 2pt}
+\setlength{\abovedisplayshortskip}{2pt plus 1pt}
+\setlength{\belowdisplayshortskip}{2pt plus 1pt minus 1pt}
+
+\makeatletter
+\def\paragraph{\@startsection{paragraph}{4}{\z@}
+  {0.75ex plus 0.25ex minus .1ex}
+  {-1em}
+  {\normalsize\bf}}
+\makeatother
+
+\iclrfinalcopy
+\arxivtrue
+
+\begin{document}
+
+\maketitle
+
+\input{contents/abstract}
+\input{contents/introduction}
+\input{contents/related}
+\input{contents/method}
+\input{figure_text/downstream_table}
+\input{contents/evaluation}
+\input{contents/conclusion}
+\input{contents/acknowledgement}
+% \input{contents/ai_usage}
+% \input{contents/reproducibility}
+
+\bibliography{bib/reference}
+\bibliographystyle{iclr2027_conference}
+
+\newpage
+\appendix
+\input{contents/appendix/instance}
+\input{contents/appendix/full_results}
+\input{contents/appendix/efficiency}
+\input{contents/appendix/eval_details}
+
+\end{document}

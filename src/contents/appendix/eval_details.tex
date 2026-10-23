@@ -1,0 +1,24 @@
+\section{Evaluation Details}
+\label{app:eval-details}
+
+\paragraph{Sampling parameters.}
+Table~\ref{tab:sampling} lists the generation settings.
+All methods of a model share the same settings, prompts, and sample set.
+For the Qwen3.5 models, we follow the benchmark settings of the official model cards with thinking enabled; Kimi-Linear-48B-A3B-Instruct is an instruction model without a thinking mode.
+The maximum model length is set to the output limit plus 8,192 tokens, so that no generation is truncated by the context window before reaching the output limit.
+
+\begin{table}[h]
+  \centering
+  \small
+  \caption{Generation settings of the downstream evaluation.}
+  \label{tab:sampling}
+  \begin{tabular}{@{}lcccccc@{}}
+    \toprule
+    Model & Temp. & Top-$p$ & Top-$k$ & Presence & Thinking & Max output \\
+    \midrule
+    Qwen3.5-9B & 1.0 & 0.95 & 20 & 1.5 & on & 81{,}920 \\
+    Qwen3.5-35B-A3B & 1.0 & 0.95 & 20 & 1.5 & on & 81{,}920 \\
+    Kimi-Linear-48B-A3B & 1.0 & 1.0 & -- & 0 & -- & 65{,}536 \\
+    \bottomrule
+  \end{tabular}
+\end{table}

@@ -1,0 +1,130 @@
+\section{Instances of the General Update}
+\label{app:instances}
+
+For the model-specific expansions and recurrence derivations below, $D_t=\Diag(d_t)$, $\tk_t$, and $b_t$ denote the main text's $\Diag(\alpha_t)$, $k_t$, and $\beta_t$, respectively, with $d_t=\alpha_t$.
+This notation separates the general recurrence coefficients from the raw keys and scalar gates in each model's native update.
+Section~\ref{sec:prelim} thus writes every model we consider in the form
+\begin{equation*}
+  S_t = D_t S_{t-1} + \tk_t\bigl(v_t - S_{t-1}^{\top} b_t\bigr)^{\top},
+  \qquad
+  o_t = S_t^{\top} q_t,
+\end{equation*}
+with a diagonal decay $D_t=\Diag(d_t)$, a write key $\tk_t$ and a read vector $b_t$.
+Table~\ref{tab:instances} lists common instances: linear attention~\citep{katharopoulos2020transformers}, RetNet~\citep{sun2023retentive}, Mamba2~\citep{dao2024transformers}, GLA~\citep{yang2023gated}, RWKV6~\citep{peng2024eagle}, HGRN2~\citep{qin2024hgrn2}, DeltaNet~\citep{yang2024parallelizing}, Gated DeltaNet~\citep{yang2025gated}, KDA~\citep{team2025kimi} and DeltaProduct~\citep{siems2025deltaproduct}.
+The decay may be the identity, a constant scalar, a data-dependent scalar or a data-dependent vector.
+The term $S_{t-1}^{\top}b_t$ reads the previous state, and the write subtracts it from $v_t$ along the same direction $\tk_t$; this is the delta rule.
+Plain and gated linear attention have $b_t=0$.
+
+\begin{table}[h]
+  \centering
+  \caption{Instances of \eqref{eq:general}. DeltaProduct applies $n$ delta-rule sub-steps per token, each of which is an instance of \eqref{eq:general}. The last column gives the number of values in one buffered update $(d_i,\tk_i,u_i)$.}
+  \label{tab:instances}
+  \small
+  \begin{tabular}{@{}lcccc@{}}
+    \toprule
+    Model & $D_t$ & $\tk_t$ & $b_t$ & Record size \\
+    \midrule
+    Linear Attention & $I$ & $k_t$ & $0$ & $d_k+d_v$ \\
+    RetNet & $\gamma I$ & $k_t$ & $0$ & $d_k+d_v$ \\
+    Mamba2 & $\alpha_t I$ & $k_t$ & $0$ & $1+d_k+d_v$ \\
+    GLA / RWKV6 / HGRN2 & $\Diag(\alpha_t)$ & $k_t$ & $0$ & $2d_k+d_v$ \\
+    DeltaNet & $I$ & $\beta_t k_t$ & $k_t$ & $d_k+d_v$ \\
+    Gated DeltaNet & $\alpha_t I$ & $\beta_t k_t$ & $\alpha_t k_t$ & $1+d_k+d_v$ \\
+    KDA & $\Diag(\alpha_t)$ & $\beta_t k_t$ & $\alpha_t\odot k_t$ & $2d_k+d_v$ \\
+    DeltaProduct, sub-step $j$ & $I$ & $\beta_{t,j}k_{t,j}$ & $k_{t,j}$ & $d_k+d_v$ \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\paragraph{Gated DeltaNet and KDA.}
+Expanding the original updates recovers the rows of Table~\ref{tab:instances}:
+\begin{align*}
+  \text{GDN:}\quad
+  \alpha_t\bigl(I-\beta_tk_tk_t^{\top}\bigr)S_{t-1}+\beta_tk_tv_t^{\top}
+  &= \alpha_tS_{t-1} + \beta_tk_t\bigl(v_t - S_{t-1}^{\top}(\alpha_tk_t)\bigr)^{\top},\\
+  \text{KDA:}\quad
+  \bigl(I-\beta_tk_tk_t^{\top}\bigr)\Diag(\alpha_t)S_{t-1}+\beta_tk_tv_t^{\top}
+  &= \Diag(\alpha_t)S_{t-1} + \beta_tk_t\bigl(v_t - S_{t-1}^{\top}(\alpha_t\odot k_t)\bigr)^{\top}.
+\end{align*}
+In both cases the erase direction coincides with the write key, so each token contributes a single rank-one record.
+In this convention the step size $\beta_t$ is carried by the write key; placing it in the correction instead, $\tk_t=k_t$ and $u_t=\beta_t(v_t-S_{t-1}^{\top}b_t)$, is equivalent.
+
+\paragraph{Models with a separate erase direction.}
+The form \eqref{eq:general} requires the erase direction to coincide with the write key.
+A model whose erase direction differs from its write key still fits by splitting each token into two sub-steps of \eqref{eq:general}.
+For RWKV7~\citep{peng2025rwkv}, whose transition is $\Diag(w_t)-\hat{\kappa}_t(a_t\odot\hat{\kappa}_t)^{\top}$, the two sub-steps are an erase with $v=0$ and a pure write with $D=I$ and $b=0$:
+\begin{align*}
+  S_t' &= \Diag(w_t)\,S_{t-1} + \hat{\kappa}_t\bigl(0 - S_{t-1}^{\top}(a_t\odot\hat{\kappa}_t)\bigr)^{\top},\\
+  S_t &= S_t' + k_t v_t^{\top}.
+\end{align*}
+Each token then contributes two rank-one records, the same treatment as a DeltaProduct token with $n=2$.
+
+\section{Derivations}
+\label{app:derivations}
+
+\subsection{Propagation of the quantization-induced deviation}
+\label{app:deviation}
+
+For this recurrence-level analysis, we fix the layer-input sequence and supply the FP32 reference and the quantized recurrence with the same coefficients $(d_t,\tk_t,b_t,v_t)$:
+\begin{align*}
+  S_t^{\mathrm{FP32}} &= D_tS_{t-1}^{\mathrm{FP32}} + \tk_t\bigl(v_t - (S_{t-1}^{\mathrm{FP32}})^{\top}b_t\bigr)^{\top},\\
+  S_t &= D_t\Sh_{t-1} + \tk_t\bigl(v_t - \Sh_{t-1}^{\top}b_t\bigr)^{\top}.
+\end{align*}
+Subtracting the two, the value $v_t$ cancels:
+\begin{equation*}
+  S_t - S_t^{\mathrm{FP32}} = D_tE_{t-1} - \tk_t\bigl(E_{t-1}^{\top}b_t\bigr)^{\top}.
+\end{equation*}
+Adding $\varepsilon_t=\DQ_b(\Sh_t)-S_t$ to both sides gives
+\begin{equation}
+  E_t=D_tE_{t-1}-\tk_t\bigl(E_{t-1}^{\top}b_t\bigr)^{\top}+\varepsilon_t.
+  \label{eq:deviation}
+\end{equation}
+Unrolling it, each error $\varepsilon_s$ is carried to step $t$ by the same decay and erase steps that act on memories written at step $s$, and it reaches the output through $o_t=S_t^{\top}q_t$.
+Under per-window quantization, $\varepsilon_s$ is nonzero only at window boundaries.
+Because each update is small relative to the state, per-step rounding discards part of it at every step, so these errors are correlated and add up coherently.
+Per-window quantization rounds the accumulated updates only once, which reduces the error by far more than the factor of $p$ in quantization frequency.
+
+\subsection{Window unrolling and state readout}
+\label{app:readout}
+
+Restoring an arbitrary window-start index $t$, \eqref{eq:window} follows from \eqref{eq:record} by induction on the window length: applying one more record multiplies every existing term by $D_{t+p+1}$ and appends $\tk_{t+p+1}u_{t+p+1}^{\top}$, and $D_{t+p+1}\Gamma_{a:t+p}=\Gamma_{a:t+p+1}$.
+Transposing the unrolled state at step $i$ and multiplying by $x$ gives, for $t\le i\le t+p$,
+\begin{equation}
+  S_i^{\top}x=\Sh_t^{\top}\Gamma_{t+1:i}x
+    +\sum_{j=t+1}^{i}u_j\bigl(\tk_j^{\top}\Gamma_{j+1:i}x\bigr),
+  \label{eq:readout}
+\end{equation}
+using $\Gamma^{\top}=\Gamma$ for diagonal $\Gamma$.
+The first term costs $O(d_kd_v)$, and each of the $i-t$ records costs $O(d_k+d_v)$: one inner product $\tk_j^{\top}(\Gamma_{j+1:i}x)$ and one scaled vector $u_j$.
+The diagonal products $\Gamma_{j+1:i}$ are cumulative decays and can be maintained incrementally, so the read never forms a $d_k\times d_v$ intermediate state.
+
+\subsection{Readout with a smoothed quantized residual}
+\label{app:smoothing}
+
+For per-value-channel symmetric INT8 quantization, let $Z_0$ denote the integer payload and $B$ the diagonal scale matrix, so that $\dequant_b(\hat R_0^C)=(Z_0/127)B$.
+Therefore, for any read vector $x$ and cumulative diagonal decay $\Gamma$,
+\begin{equation*}
+  \bigl[C\,\dequant_b(\hat R_0^C)\bigr]^{\top}\Gamma x
+    =\left(C\frac{Z_0}{127}B\right)^{\top}\Gamma x
+    =B\frac{Z_0^{\top}}{127}C\Gamma x.
+\end{equation*}
+$C$ and $\Gamma$ act on the key coordinates, while $B$ rescales the quantized residual's value-side projection.
+Neither scale is applied to the real or Compensator Token records, whose contributions are already expressed in the original state coordinates.
+
+For the Compensator Token component $\tilde K\tilde U^{\top}$, the corresponding read is
+\begin{equation*}
+  (\tilde K\tilde U^{\top})^{\top}\Gamma x
+    =\tilde U(\tilde K^{\top}\Gamma x)
+    =\sum_{h=1}^{r}\tilde u_h(\tilde k_h^{\top}\Gamma x).
+\end{equation*}
+Adding these rank-one records and the real records to the quantized-residual read gives the readout form of \eqref{eq:smooth}:
+\begin{equation}
+  \begin{aligned}
+    S_\ell^{\top}x
+      ={}&\dequant_b(\hat R_0^C)^{\top}C\Gamma_{1:\ell}x
+        +\tilde U\bigl(\tilde K^{\top}\Gamma_{1:\ell}x\bigr)\\
+       &+\sum_{j=1}^{\ell}u_j\bigl(k_j^{\top}\Gamma_{j+1:\ell}x\bigr).
+  \end{aligned}
+  \label{eq:smooth-readout}
+\end{equation}
+At a boundary, the sum is reconstructed in the original state coordinates before fitting the new factors and recomputing the residual scales.

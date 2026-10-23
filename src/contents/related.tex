@@ -1,0 +1,21 @@
+\section{Related Work}
+
+\paragraph{Linear attention and hybrid models.}
+\cite{katharopoulos2020transformers} propose Linear attention to replace the softmax attention~\citep{vaswani2017attention} with a recurrence over a fixed-size state, and a series of works improve its expressiveness with data-dependent gating and delta-rule updates, including GLA~\citep{yang2023gated}, Mamba2~\citep{dao2024transformers}, DeltaNet~\citep{schlag2021linear,yang2024parallelizing}, Gated DeltaNet~\citep{yang2025gated}, and KDA~\citep{team2025kimi}.
+Their chunkwise formulation~\citep{yang2023gated} materializes the state in HBM only at chunk boundaries during training and prefill, and is implemented using efficient Triton kernels~\citep{triton} in libraries such as FLA~\citep{yang2024fla}.
+Recent LLMs combine a few full or sparse attention layers with a majority of linear attention layers~\citep{qwen2025qwen3next,team2026kimi,zai2026glm53flash,blakeman2025nemotron}, and these hybrid models have become a common design for long-context and long-reasoning workloads.
+These works focus on the architecture and its full-precision kernels; the storage precision of the recurrent state is not their concern.
+
+\paragraph{Quantization for ML models.}
+Quantization has become a standard approach for reducing the memory requirements for LLM inference.
+Weight-only methods such as GPTQ~\citep{frantar2022gptq} and AWQ~\citep{lin2024awq} compress the weights to 4 bits, and SmoothQuant~\citep{xiao2023smoothquant} further quantizes the activations by migrating their outliers into the weights.
+As the context grows, the KV cache becomes the dominant memory cost. KIVI~\citep{liu2024kivi} quantizes keys per channel and values per token, KVQuant~\citep{hooper2024kvquant} isolates outliers into a sparse full-precision component.
+SVDQuant~\citep{li2024svdquant} and GEAR~\citep{kang2024gear} absorb outliers into a high-precision low-rank component and quantize the residual.
+For state space models, Quamba~\citep{chiang2025quamba} and MambaQuant~\citep{yue2025mambaquant} quantize the weights and activations, and Quamba2~\citep{chiang2025quamba2} and Q-Mamba~\citep{tianqi2025q} further quantize the cached SSM state.
+These methods are specialized to Mamba's selective SSM, whose state is updated differently from that of other linear attention architectures.
+
+\paragraph{State management in linear attention serving.}
+Since the recurrent state is overwritten at every token, serving systems need extra mechanisms to keep or restore earlier states.
+ReplaySSM~\citep{dao2026replayssm} supports speculative decoding by keeping the state at a checkpoint and recomputing the recent tokens for efficient rollback of the state.
+Per-window quantization similarly starts from a stored boundary state and replays recent updates, but uses this structure to improve quantization accuracy.
+Marconi~\citep{pan2025marconi} enables prefix caching for hybrid models by saving the states of cached prefixes as checkpoints, at the cost of a larger memory footprint.

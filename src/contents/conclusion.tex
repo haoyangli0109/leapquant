@@ -1,0 +1,9 @@
+\vspace{-0.75em}
+\section{Conclusion}
+\label{sec:conclusion}
+
+We present \method{}, a training-free method for near-lossless quantization of recurrent states in linear attention.
+\sys{} mitigates error accumulation by quantizing the state only once per window, and captures state outliers in a few high-precision compensator tokens before smoothing the residual.
+With an 8-bit state, \method{} matches FP32 accuracy on long reasoning and code generation while reducing the state memory and accelerating decoding on both GDN and KDA models.
+As hybrid models devote more of their layers to linear
+attention, we believe \method{} can make low-precision recurrent states a practical default for serving them.
