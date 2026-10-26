@@ -38,11 +38,27 @@
 #   TAG=lq-pc bash run_atom.sh prefix-bench   # shared-prefix TTFT on a running server-decode
 # prefix-e2e runs Qwen3.5-9B on one GPU. On a GPU other jobs share, add
 # EXTRA_ARGS="--gpu-memory-utilization 0.999": ATOM counts their memory as used.
+#
+# Kimi-Linear-48B-A3B-Instruct (KDA), one GPU per server. KSTATE picks the state:
+# fp32 (the baseline), bf16 (stored as BF16 every step), lq (LeapQuant), rs
+# (ReplaySSM). kimi-reason samples as the paper does (appendix E): temperature
+# 1.0, top_p 1.0, up to 65,536 tokens, 3 samples per question. Results go to
+# $KOUT, by default ../kimi_eval, outside this repository.
+#   HIP_VISIBLE_DEVICES=0 KSTATE=fp32 bash run_atom.sh kimi-server   # :8000
+#   HIP_VISIBLE_DEVICES=1 KSTATE=bf16 SERVER_PORT=8001 ENGINE_PORT=8016 bash run_atom.sh kimi-server
+#   HIP_VISIBLE_DEVICES=2 KSTATE=lq SERVER_PORT=8002 ENGINE_PORT=8026 bash run_atom.sh kimi-server
+#   TAG=fp32 bash run_atom.sh kimi-reason            # AIME, GPQA-Diamond, MMLU-Pro
+#   TAG=bf16 PORT=8001 MMLUPRO_N=4000 bash run_atom.sh kimi-reason
+#   bash run_atom.sh kimi-summary                    # scores, and per question against fp32
+#   TAG=fp32 bash run_atom.sh kimi-decode            # decode sweep as decode, then decode_window.py
+#   TAG=fp32 bash run_atom.sh kimi-gsm8k
 set -e
 export AITER_LOG_LEVEL=WARNING
 export HIP_VISIBLE_DEVICES=${HIP_VISIBLE_DEVICES:-4,5}
 MODEL=/shareddata/haoyanli/Qwen/Qwen3.8-Flash-Next
+KIMI=/shareddata/haoyanli/moonshotai/Kimi-Linear-48B-A3B-Instruct
 HERE=$(cd "$(dirname "$0")" && pwd)
+KOUT=${KOUT:-$(dirname "$HERE")/kimi_eval}
 NO_CACHE=$([ "${PREFIX_CACHE:-0}" = 1 ] || echo --no-enable_prefix_caching)
 
 summarize() {
@@ -188,8 +204,64 @@ prefix-e2e)
 prefix-compare)
   cd $HERE && python prefix_e2e.py --compare ${TAGS:?set TAGS, e.g. TAGS=\"lq-cache lq-nocache\"}
   ;;
+kimi-server)
+  # TP1 on the first GPU listed. The compile cache is kept, so that several
+  # servers can start side by side; the model length is the output cap plus
+  # 8,192, as in the paper.
+  export HIP_VISIBLE_DEVICES=${HIP_VISIBLE_DEVICES%%,*}
+  case ${KSTATE:-fp32} in
+    fp32) ;;
+    bf16) export ATOM_GDN_SSM_DTYPE=bf16 ;;
+    lq) export ATOM_ENABLE_LEAPQUANT=1 ;;
+    rs) export ATOM_ENABLE_REPLAYSSM=1 ;;
+    *) echo "KSTATE is one of fp32, bf16, lq, rs" >&2; exit 1 ;;
+  esac
+  python -m atom.entrypoints.openai_server \
+    --model $KIMI --trust-remote-code -tp 1 \
+    $NO_CACHE --max-num-seqs 512 --max-model-len $((65536 + 8192)) \
+    --server-port ${SERVER_PORT:-8000} --port ${ENGINE_PORT:-8006} \
+    ${EXTRA_ARGS:-}
+  ;;
+kimi-reason)
+  # Table 6 of the paper for Kimi-Linear. MMLU-Pro has 12,032 questions;
+  # MMLUPRO_N takes the first N of a fixed random order instead, and a larger N
+  # later only adds questions. A different setting needs another $KOUT.
+  cd $HERE && python reason_eval.py --tag ${TAG:?set TAG to name this run} \
+    --url http://localhost:${PORT:-8000} --model $KIMI --out $KOUT/results_reason_paper \
+    --tasks ${TASKS:-aime26 gpqa mmlupro} --samples ${SAMPLES:-3} \
+    ${MMLUPRO_N:+--mmlupro-n $MMLUPRO_N} \
+    --max-tokens 65536 --concurrency ${NUM_CONCURRENT:-256} \
+    --sampling '{"temperature": 1.0, "top_p": 1.0, "top_k": -1, "presence_penalty": 0.0}'
+  ;;
+kimi-summary)
+  cd $HERE && python reason_eval.py --summary --out $KOUT/results_reason_paper --base ${BASE:-fp32}
+  ;;
+kimi-decode)
+  out=$KOUT/results/${TAG:?set TAG to name this run}
+  mkdir -p $out
+  for c in ${CONC:-32 64 128 256 512}; do
+    python -m atom.benchmarks.benchmark_serving \
+      --model=$KIMI --trust-remote-code --backend=vllm --base-url=http://localhost:${PORT:-8000} \
+      --dataset-name=random \
+      --random-input-len=4096 --random-output-len=1024 --random-range-ratio=1.0 \
+      --num-prompts=$c --max-concurrency=$c \
+      --request-rate=inf --ignore-eos \
+      --percentile-metrics="ttft,tpot,itl,e2el" \
+      --save-result --save-detailed --result-dir=$out --result-filename=c$c.json
+  done
+  python $HERE/decode_window.py $out
+  ;;
+kimi-gsm8k)
+  HF_HUB_CACHE=/shareddata/huggingface/hub HF_DATASETS_CACHE=/shareddata/huggingface/datasets \
+  lm_eval --model local-chat-completions \
+    --model_args "model=$KIMI,base_url=http://localhost:${PORT:-8000}/v1/chat/completions,num_concurrent=${NUM_CONCURRENT:-128},max_retries=3,timeout=1800,tokenized_requests=False,trust_remote_code=True" \
+    --tasks gsm8k --num_fewshot 5 \
+    --apply_chat_template --fewshot_as_multiturn \
+    --gen_kwargs 'max_gen_toks=4096,until=<|im_end|>' \
+    --log_samples --output_path $KOUT/results_gsm8k/${TAG:?set TAG to name this run}
+  ;;
 *)
-  echo "usage: $0 [server|bench|server-decode|decode|summary|smoke|gsm8k|server-reason|reason|gdn|lq-check|lq-bench|lq-prefix-check|prefix-e2e|prefix-compare]" >&2
+  echo "usage: $0 [server|bench|server-decode|decode|summary|smoke|gsm8k|server-reason|reason|gdn|lq-check|lq-bench|lq-prefix-check|prefix-e2e|prefix-compare|kimi-server|kimi-reason|kimi-summary|kimi-decode|kimi-gsm8k]" >&2
   exit 1
   ;;
 esac

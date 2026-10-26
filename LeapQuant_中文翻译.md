@@ -4,29 +4,33 @@
 >
 > - 原文标题：*LeapQuant: Efficient Linear Attention with Accurate Recurrent State Quantization*
 > - 原文作者：Yi Pan, Haocheng Xi, Kan Zhu, Xingyang Li, Yibo Wu, Mayank Mishra, Hongtao Zhang, William X. Zheng, Baris Kasikci, Song Han, Kurt Keutzer, Rishabh Iyer, Ion Stoica
-> - 原文出处：arXiv:2609.38166（2026 年 9 月 29 日提交），<https://arxiv.org/abs/2609.38166>
+> - 原文出处：arXiv:2609.38166（2026 年 9 月 29 日提交），[https://arxiv.org/abs/2609.38166](https://arxiv.org/abs/2609.38166)
 > - 原文许可：[CC BY 4.0](http://creativecommons.org/licenses/by/4.0/)
 > - 改动说明：本文是上述论文的**非官方中文翻译**（属于改编作品），依据作者上传的 LaTeX 源码逐段译出，原作者未审阅、也未为本译文背书。图片直接取自原文源码，未作修改，图内文字保持英文，必要处加了译注。
 > - 记号约定：专有名词（GDN、KDA、FP32、INT8、vLLM、TileLang 等）保留英文；"Compensator Token"译为"补偿 token"；"per-step / per-token quantization"译为"逐步量化 / 逐 token 量化"（两者指同一种基线），"per-window quantization"译为"逐窗口量化"。形如【译注：……】的内容为译者补充，不属于原文。
 > - 原文 PDF：同目录下 `2609.38166_LeapQuant.pdf`。
 
-Yi Pan<sup>1*</sup>　Haocheng Xi<sup>1*</sup>　Kan Zhu<sup>2</sup>　Xingyang Li<sup>3</sup>　Yibo Wu<sup>4</sup>
+Yi Pan1*　Haocheng Xi1*　Kan Zhu2　Xingyang Li3　Yibo Wu4
 
-Mayank Mishra<sup>1</sup>　Hongtao Zhang<sup>2</sup>　William X. Zheng<sup>1</sup>　Baris Kasikci<sup>2</sup>
+Mayank Mishra1　Hongtao Zhang2　William X. Zheng1　Baris Kasikci2
 
-Song Han<sup>3,5</sup>　Kurt Keutzer<sup>1</sup>　Rishabh Iyer<sup>1</sup>　Ion Stoica<sup>1</sup>
+Song Han3,5　Kurt Keutzer1　Rishabh Iyer1　Ion Stoica1
 
-<sup>1</sup>UC Berkeley　<sup>2</sup>University of Washington　<sup>3</sup>MIT　<sup>4</sup>Perplexity AI　<sup>5</sup>NVIDIA
+1UC Berkeley　2University of Washington　3MIT　4Perplexity AI　5NVIDIA
 
-<sup>*</sup>同等贡献
+*同等贡献
 
 ---
+
+
 
 ## 摘要
 
 近期的大语言模型（LLM）越来越多地采用混合架构，用线性注意力替代标准注意力，例如 Gated DeltaNet（GDN）和 Kimi Delta Attention（KDA）。这类模型把上下文压缩进一个固定大小的循环状态（recurrent state），大幅降低了长上下文处理的开销，但反复读取和更新这个状态仍然是推理中的主要瓶颈。量化是降低这一开销的自然手段，但由于舍入误差的累积以及状态中存在离群的行和列，量化可能显著损害模型质量。为应对这些挑战，我们提出 ***LeapQuant***——一种无需训练的方法，在 8 比特循环状态量化下实现近乎无损的性能。首先，为缓解误差累积，我们提出逐窗口量化（per-window quantization）：它*跃过*（leap over）一个 token 窗口，只在窗口末尾对状态做一次量化。在窗口内部，输出由固定的低比特状态与以高精度缓冲的更新共同计算得出。其次，为减小每次量化引入的误差，LeapQuant 把状态中最大的离群值保留为少量高精度的*补偿 token*（Compensator Tokens），它们与真实 token 共享同一条更新路径。随后，我们在量化前对剩余的残差进行平滑，以进一步降低误差。在 Qwen、Kimi 和 GLM 模型系列上的全面实验表明，***LeapQuant*** 大幅降低了推理过程中的显存与计算开销。在精度与 FP32 基线相当的前提下，它在 NVIDIA B200、RTX PRO 6000 和 RTX 5090 GPU 上实现了 kernel 级平均 2.05–3.70× 的加速，以及端到端推理平均 1.47× 的加速。
 
 ---
+
+
 
 ## 1 引言
 
@@ -56,6 +60,8 @@ Song Han<sup>3,5</sup>　Kurt Keutzer<sup>1</sup>　Rishabh Iyer<sup>1</sup>　I
 
 ---
 
+
+
 ## 2 相关工作
 
 **线性注意力与混合模型。** Katharopoulos et al. (2020) 提出线性注意力，用基于固定大小状态的递推替代 softmax 注意力（Vaswani et al., 2017）；随后的一系列工作借助数据相关的门控和 delta 规则更新提升了其表达能力，包括 GLA（Yang et al., 2023）、Mamba2（Dao & Gu, 2024）、DeltaNet（Schlag et al., 2021; Yang et al., 2024）、Gated DeltaNet（Yang et al., 2025）以及 KDA（Team et al., 2025）。它们的分块（chunkwise）形式（Yang et al., 2023）在训练和预填充（prefill）阶段只在块边界处把状态物化到 HBM 中，并在 FLA（Yang & Zhang, 2024）等库中用高效的 Triton kernel（Tillet et al., 2019）实现。近期的 LLM 将少量全注意力或稀疏注意力层与占多数的线性注意力层组合在一起（Qwen Team, 2025; Team et al., 2026; Z.ai, 2026; Blakeman et al., 2025），这类混合模型已成为长上下文、长推理负载的常见设计。这些工作关注的是架构本身及其全精度 kernel，循环状态的存储精度并不在它们的考虑范围之内。
@@ -66,7 +72,11 @@ Song Han<sup>3,5</sup>　Kurt Keutzer<sup>1</sup>　Rishabh Iyer<sup>1</sup>　I
 
 ---
 
+
+
 ## 3 方法
+
+
 
 ### 3.1 预备知识
 
@@ -190,42 +200,38 @@ $$
 
 **表 1**：下游任务性能（%，越高越好）。在 8 比特、6 比特和 4 比特各组内，每列最佳分数以粗体标出。
 
-<table>
-<thead>
-<tr><th rowspan="2" align="left">方法</th>
-<th colspan="4">Qwen3.5-9B</th>
-<th colspan="4">Qwen3.5-35B-A3B</th>
-<th colspan="4">Kimi-Linear-48B-A3B</th>
-<th rowspan="2">平均</th>
-</tr>
-<tr><th>AIME</th><th>GPQA</th><th>LCB</th><th>MMLU</th><th>AIME</th><th>GPQA</th><th>LCB</th><th>MMLU</th><th>AIME</th><th>GPQA</th><th>LCB</th><th>MMLU</th></tr>
-</thead>
-<tbody>
-<tr><td align="left">FP32</td><td align="right">87.9</td><td align="right">81.3</td><td align="right">64.1</td><td align="right">83.3</td><td align="right">91.5</td><td align="right">84.7</td><td align="right">75.6</td><td align="right">85.9</td><td align="right">67.5</td><td align="right">70.3</td><td align="right">41.4</td><td align="right">72.4</td><td align="right">75.5</td></tr>
-<tr><td align="left">BF16</td><td align="right">72.1</td><td align="right">66.2</td><td align="right">49.6</td><td align="right">81.0</td><td align="right">85.8</td><td align="right">79.3</td><td align="right">67.2</td><td align="right">85.2</td><td align="right">64.3</td><td align="right">68.1</td><td align="right">41.0</td><td align="right">64.0</td><td align="right">68.7</td></tr>
-<tr><td colspan="14" align="left"><i>8 比特方法</i></td></tr>
-<tr style="background:#E4EEFB"><td align="left"><b>LeapQuant（本文）</b></td><td align="right"><b>87.9</b></td><td align="right"><b>81.8</b></td><td align="right"><b>64.1</b></td><td align="right"><b>83.8</b></td><td align="right"><b>91.0</b></td><td align="right"><b>83.9</b></td><td align="right"><b>76.1</b></td><td align="right"><b>85.8</b></td><td align="right"><b>68.3</b></td><td align="right"><b>69.8</b></td><td align="right">41.3</td><td align="right">72.1</td><td align="right"><b>75.5</b></td></tr>
-<tr><td align="left">FP8</td><td align="right">14.6</td><td align="right">34.3</td><td align="right">21.4</td><td align="right">42.6</td><td align="right">29.6</td><td align="right">39.9</td><td align="right">26.7</td><td align="right">56.4</td><td align="right">25.6</td><td align="right">46.6</td><td align="right">16.0</td><td align="right">57.0</td><td align="right">34.2</td></tr>
-<tr><td align="left">INT8</td><td align="right">7.1</td><td align="right">26.8</td><td align="right">9.2</td><td align="right">44.3</td><td align="right">0.0</td><td align="right">0.0</td><td align="right">3.1</td><td align="right">6.8</td><td align="right">52.8</td><td align="right">65.8</td><td align="right">35.5</td><td align="right">64.5</td><td align="right">26.3</td></tr>
-<tr><td align="left">KVQuant</td><td align="right">74.6</td><td align="right">70.2</td><td align="right">59.5</td><td align="right">82.4</td><td align="right">76.3</td><td align="right">69.7</td><td align="right">44.3</td><td align="right">83.5</td><td align="right">66.6</td><td align="right">69.7</td><td align="right"><b>42.1</b></td><td align="right">65.0</td><td align="right">67.0</td></tr>
-<tr><td align="left">QuaRot</td><td align="right">49.6</td><td align="right">57.1</td><td align="right">38.2</td><td align="right">73.1</td><td align="right">32.9</td><td align="right">36.4</td><td align="right">15.3</td><td align="right">56.0</td><td align="right">63.3</td><td align="right">69.2</td><td align="right">36.6</td><td align="right"><b>73.1</b></td><td align="right">50.1</td></tr>
-<tr><td align="left">TurboQuant</td><td align="right">70.8</td><td align="right">61.1</td><td align="right">45.0</td><td align="right">80.5</td><td align="right">10.4</td><td align="right">22.7</td><td align="right">15.3</td><td align="right">52.7</td><td align="right">57.5</td><td align="right">69.2</td><td align="right">41.2</td><td align="right">69.0</td><td align="right">49.6</td></tr>
-<tr><td colspan="14" align="left"><i>6 比特方法</i></td></tr>
-<tr style="background:#E4EEFB"><td align="left"><b>LeapQuant（本文）</b></td><td align="right"><b>85.8</b></td><td align="right"><b>79.8</b></td><td align="right"><b>59.5</b></td><td align="right"><b>81.7</b></td><td align="right"><b>88.8</b></td><td align="right"><b>83.8</b></td><td align="right"><b>68.7</b></td><td align="right"><b>79.5</b></td><td align="right"><b>66.1</b></td><td align="right"><b>66.2</b></td><td align="right"><b>35.9</b></td><td align="right"><b>73.4</b></td><td align="right"><b>72.4</b></td></tr>
-<tr><td align="left">TurboQuant</td><td align="right">27.5</td><td align="right">29.8</td><td align="right">16.0</td><td align="right">61.2</td><td align="right">0.4</td><td align="right">5.1</td><td align="right">4.6</td><td align="right">16.1</td><td align="right">48.8</td><td align="right">64.7</td><td align="right"><b>35.9</b></td><td align="right">72.7</td><td align="right">31.9</td></tr>
-<tr><td align="left">NVFP6</td><td align="right">0.4</td><td align="right">18.7</td><td align="right">12.2</td><td align="right">28.3</td><td align="right">13.8</td><td align="right">34.3</td><td align="right">25.2</td><td align="right">46.3</td><td align="right">30.8</td><td align="right">52.0</td><td align="right">25.2</td><td align="right">67.4</td><td align="right">29.6</td></tr>
-<tr><td colspan="14" align="left"><i>4 比特方法</i></td></tr>
-<tr style="background:#E4EEFB"><td align="left"><b>LeapQuant（本文）</b></td><td align="right"><b>58.1</b></td><td align="right"><b>65.7</b></td><td align="right"><b>34.0</b></td><td align="right"><b>80.2</b></td><td align="right"><b>59.2</b></td><td align="right"><b>57.6</b></td><td align="right"><b>37.4</b></td><td align="right"><b>81.4</b></td><td align="right"><b>67.9</b></td><td align="right"><b>69.2</b></td><td align="right"><b>40.5</b></td><td align="right"><b>73.4</b></td><td align="right"><b>60.4</b></td></tr>
-<tr><td align="left">TurboQuant</td><td align="right">3.3</td><td align="right">26.8</td><td align="right">13.0</td><td align="right">47.4</td><td align="right">0.0</td><td align="right">0.0</td><td align="right">0.0</td><td align="right">0.3</td><td align="right">24.2</td><td align="right">63.1</td><td align="right">26.7</td><td align="right">69.5</td><td align="right">22.9</td></tr>
-<tr><td align="left">MXFP4</td><td align="right">0.0</td><td align="right">5.1</td><td align="right">0.0</td><td align="right">7.4</td><td align="right">0.0</td><td align="right">4.5</td><td align="right">0.8</td><td align="right">5.5</td><td align="right">4.2</td><td align="right">26.9</td><td align="right">8.7</td><td align="right">53.1</td><td align="right">9.7</td></tr>
-</tbody>
-</table>
+
+| 方法                | Qwen3.5-9B | Qwen3.5-35B-A3B | Kimi-Linear-48B-A3B | 平均       |          |          |          |          |          |          |          |          |          |
+| ----------------- | ---------- | --------------- | ------------------- | -------- | -------- | -------- | -------- | -------- | -------- | -------- | -------- | -------- | -------- |
+| AIME              | GPQA       | LCB             | MMLU                | AIME     | GPQA     | LCB      | MMLU     | AIME     | GPQA     | LCB      | MMLU     |          |          |
+| FP32              | 87.9       | 81.3            | 64.1                | 83.3     | 91.5     | 84.7     | 75.6     | 85.9     | 67.5     | 70.3     | 41.4     | 72.4     | 75.5     |
+| BF16              | 72.1       | 66.2            | 49.6                | 81.0     | 85.8     | 79.3     | 67.2     | 85.2     | 64.3     | 68.1     | 41.0     | 64.0     | 68.7     |
+| *8 比特方法*          |            |                 |                     |          |          |          |          |          |          |          |          |          |          |
+| **LeapQuant（本文）** | **87.9**   | **81.8**        | **64.1**            | **83.8** | **91.0** | **83.9** | **76.1** | **85.8** | **68.3** | **69.8** | 41.3     | 72.1     | **75.5** |
+| FP8               | 14.6       | 34.3            | 21.4                | 42.6     | 29.6     | 39.9     | 26.7     | 56.4     | 25.6     | 46.6     | 16.0     | 57.0     | 34.2     |
+| INT8              | 7.1        | 26.8            | 9.2                 | 44.3     | 0.0      | 0.0      | 3.1      | 6.8      | 52.8     | 65.8     | 35.5     | 64.5     | 26.3     |
+| KVQuant           | 74.6       | 70.2            | 59.5                | 82.4     | 76.3     | 69.7     | 44.3     | 83.5     | 66.6     | 69.7     | **42.1** | 65.0     | 67.0     |
+| QuaRot            | 49.6       | 57.1            | 38.2                | 73.1     | 32.9     | 36.4     | 15.3     | 56.0     | 63.3     | 69.2     | 36.6     | **73.1** | 50.1     |
+| TurboQuant        | 70.8       | 61.1            | 45.0                | 80.5     | 10.4     | 22.7     | 15.3     | 52.7     | 57.5     | 69.2     | 41.2     | 69.0     | 49.6     |
+| *6 比特方法*          |            |                 |                     |          |          |          |          |          |          |          |          |          |          |
+| **LeapQuant（本文）** | **85.8**   | **79.8**        | **59.5**            | **81.7** | **88.8** | **83.8** | **68.7** | **79.5** | **66.1** | **66.2** | **35.9** | **73.4** | **72.4** |
+| TurboQuant        | 27.5       | 29.8            | 16.0                | 61.2     | 0.4      | 5.1      | 4.6      | 16.1     | 48.8     | 64.7     | **35.9** | 72.7     | 31.9     |
+| NVFP6             | 0.4        | 18.7            | 12.2                | 28.3     | 13.8     | 34.3     | 25.2     | 46.3     | 30.8     | 52.0     | 25.2     | 67.4     | 29.6     |
+| *4 比特方法*          |            |                 |                     |          |          |          |          |          |          |          |          |          |          |
+| **LeapQuant（本文）** | **58.1**   | **65.7**        | **34.0**            | **80.2** | **59.2** | **57.6** | **37.4** | **81.4** | **67.9** | **69.2** | **40.5** | **73.4** | **60.4** |
+| TurboQuant        | 3.3        | 26.8            | 13.0                | 47.4     | 0.0      | 0.0      | 0.0      | 0.3      | 24.2     | 63.1     | 26.7     | 69.5     | 22.9     |
+| MXFP4             | 0.0        | 5.1             | 0.0                 | 7.4      | 0.0      | 4.5      | 0.8      | 5.5      | 4.2      | 26.9     | 8.7      | 53.1     | 9.7      |
+
 
 【译注：AIME = AIME 2026，GPQA = GPQA-Diamond，LCB = LiveCodeBench v6，MMLU = MMLU-Pro。除 LeapQuant 外，表中所有量化基线都在每个解码步重新量化状态。】
 
 ---
 
+
+
 ## 4 评估
+
+
 
 ### 4.1 实验设置
 
@@ -275,15 +281,17 @@ $$
 
 **表 2**：在 Qwen3.5-9B 上对 LeapQuant 各组件的消融。
 
-| 方法 | AIME | LCB | Kernel |
-|:---|---:|---:|---:|
-| FP32 逐步 | **87.9** | **64.1** | 1.00× |
-| BF16 逐步 | 72.1 | 49.6 | 1.64× |
-| 　+ 逐窗口 | **87.8** | 62.9 | 1.71× |
-| INT8 逐步 | 7.1 | 9.2 | 2.43× |
-| 　+ 逐窗口 | 82.4 | 60.6 | 2.64× |
-| 　+ 补偿 token | 86.6 | 61.5 | 2.56× |
-| 　+ 平滑 | **87.9** | **64.1** | 2.52× |
+
+| 方法         | AIME     | LCB      | Kernel |
+| ---------- | -------- | -------- | ------ |
+| FP32 逐步    | **87.9** | **64.1** | 1.00×  |
+| BF16 逐步    | 72.1     | 49.6     | 1.64×  |
+| + 逐窗口      | **87.8** | 62.9     | 1.71×  |
+| INT8 逐步    | 7.1      | 9.2      | 2.43×  |
+| + 逐窗口      | 82.4     | 60.6     | 2.64×  |
+| + 补偿 token | 86.6     | 61.5     | 2.56×  |
+| + 平滑       | **87.9** | **64.1** | 2.52×  |
+
 
 **各项设计的有效性。** 表 2 在 INT8 状态上逐个加入各项设计，并以 BF16 作为更高精度的参照。逐步 INT8 使 AIME 从 87.9% 降到 7.1%，LiveCodeBench 从 64.1% 降到 9.2%。逐窗口量化把 AIME 和 LiveCodeBench 的精度分别提升到 82.4% 和 60.6%；在 BF16 下，它也把 AIME 从 72.1% 提升到 87.8%。随后，补偿 token 把 INT8 的分数提升到 86.6% 和 61.5%，而平滑在 2.52× kernel 加速下补齐了与 FP32 之间剩余的差距。每个阶段都提升了质量，而完整的 8 比特方法仍保有显著的效率优势。在效率方面，我们与 FP32 和 BF16 的逐步 FLA kernel 以及官方仓库中的 BF16 ReplaySSM kernel（Liou & Dao, 2026）进行比较。集齐三个组件后，LeapQuant 在 2.52× 的 kernel 加速下达到了 FP32 的精度。
 
@@ -291,27 +299,33 @@ $$
 
 （左）改变窗口长度 $$p$$（固定 $$r=4$$）：
 
-| $$p$$ | AIME | LCB | Kernel |
-|---:|---:|---:|---:|
-| 4 | 86.2 | 62.8 | 1.59× |
-| 8 | 87.1 | 63.2 | 2.13× |
-| 16 | **87.9** | **64.1** | **2.52×** |
-| 32 | **87.9** | **64.2** | 2.20× |
+
+| $$p$$ | AIME     | LCB      | Kernel    |
+| ----- | -------- | -------- | --------- |
+| 4     | 86.2     | 62.8     | 1.59×     |
+| 8     | 87.1     | 63.2     | 2.13×     |
+| 16    | **87.9** | **64.1** | **2.52×** |
+| 32    | **87.9** | **64.2** | 2.20×     |
+
 
 （右）改变补偿 token 数量 $$r$$（固定 $$p=16$$）：
 
-| $$r$$ | AIME | LCB | Kernel |
-|---:|---:|---:|---:|
-| 2 | 85.7 | 63.4 | **2.57×** |
-| 4 | 87.9 | **64.1** | 2.52× |
-| 8 | **88.1** | **64.0** | 2.37× |
-| 16 | 87.9 | 62.8 | 0.74× |
+
+| $$r$$ | AIME     | LCB      | Kernel    |
+| ----- | -------- | -------- | --------- |
+| 2     | 85.7     | 63.4     | **2.57×** |
+| 4     | 87.9     | **64.1** | 2.52×     |
+| 8     | **88.1** | **64.0** | 2.37×     |
+| 16    | 87.9     | 62.8     | 0.74×     |
+
 
 **窗口长度。** 表 3（左）在 $$r=4$$ 下改变窗口大小 $$p$$。窗口越长，量化越不频繁，因此精度一直提升到 $$p=16$$，之后趋于饱和。kernel 在 $$p=16$$ 时最快：更短的窗口需要更频繁地重建状态，而更长的窗口会增大每一步都要读取的记录缓冲区，并让留给流水线的共享内存变少。$$p=32$$ 没有带来进一步的精度提升，却因显存流量增加，使 kernel 加速从 2.52× 降到 2.20×。
 
 **补偿 token 数量。** 表 3（右）在 $$p=16$$ 下改变 $$r$$。精度在 $$r=4$$ 时饱和，这与能量集中在少数几个奇异值上的现象一致（图 5）。在效率方面，在 B200 GPU 上，至多四个补偿 token 的幂迭代与重建工作可以完全与显存读取重叠；但当 $$r$$ 更大时，这部分开销就会暴露出来，在 $$r=16$$ 时甚至让 kernel 比 FP32 还慢。因此我们采用 $$r=4$$：它的精度与更大的 $$r$$ 相当，kernel 速度则接近 $$r=2$$。
 
 ---
+
+
 
 ## 5 结论
 
@@ -322,6 +336,8 @@ $$
 本研究得到 NSF (IFML) CCF-2019844 的资助，以及 Accenture、AMD、Anyscale、Broadcom Inc.、Google、IBM、Intel、Intesa Sanpaolo、Lambda、Mibura Inc.、Samsung SDS 和 SAP 的捐赠支持。
 
 ---
+
+
 
 ## 参考文献
 
@@ -341,17 +357,17 @@ $$
 - Woosuk Kwon, Zhuohan Li, Siyuan Zhuang, Ying Sheng, Lianmin Zheng, Cody Hao Yu, Joseph Gonzalez, Hao Zhang, and Ion Stoica. Efficient memory management for large language model serving with PagedAttention. In *Proceedings of the 29th Symposium on Operating Systems Principles*, pp. 611–626, 2023.
 - Muyang Li, Yujun Lin, Zhekai Zhang, Tianle Cai, Xiuyu Li, Junxian Guo, Enze Xie, Chenlin Meng, Jun-Yan Zhu, and Song Han. SVDQuant: Absorbing outliers by low-rank components for 4-bit diffusion models. *arXiv preprint arXiv:2411.05007*, 2024.
 - Ji Lin, Jiaming Tang, Haotian Tang, Shang Yang, Wei-Ming Chen, Wei-Chen Wang, Guangxuan Xiao, Xingyu Dang, Chuang Gan, and Song Han. AWQ: Activation-aware weight quantization for on-device LLM compression and acceleration. *Proceedings of Machine Learning and Systems*, 6:87–100, 2024.
-- Ze-Wei Liou and Tri Dao. ReplaySSM: Cache SSM inputs, not state. <https://tridao.me/blog/2026/replayssm/>, June 2026.
+- Ze-Wei Liou and Tri Dao. ReplaySSM: Cache SSM inputs, not state. [https://tridao.me/blog/2026/replayssm/](https://tridao.me/blog/2026/replayssm/), June 2026.
 - Zirui Liu, Jiayi Yuan, Hongye Jin, Shaochen Zhong, Zhaozhuo Xu, Vladimir Braverman, Beidi Chen, and Xia Hu. KIVI: A tuning-free asymmetric 2bit quantization for KV cache. *arXiv preprint arXiv:2402.02750*, 2024.
-- Mathematical Association of America. The 44th annual American Invitational Mathematics Examination. Competition Examination, February 2026. URL <https://maa.org/maa-invitational-competitions/>.
+- Mathematical Association of America. The 44th annual American Invitational Mathematics Examination. Competition Examination, February 2026. URL [https://maa.org/maa-invitational-competitions/](https://maa.org/maa-invitational-competitions/).
 - Rui Pan, Zhuang Wang, Zhen Jia, Can Karakus, Luca Zancato, Tri Dao, Yida Wang, and Ravi Netravali. Marconi: Prefix caching for the era of hybrid LLMs. *Proceedings of Machine Learning and Systems*, 7, 2025.
 - Bo Peng, Daniel Goldstein, Quentin Anthony, Alon Albalak, Eric Alcaide, Stella Biderman, Eugene Cheah, Xingjian Du, Teddy Ferdinan, Haowen Hou, et al. Eagle and Finch: RWKV with matrix-valued states and dynamic recurrence. *arXiv preprint arXiv:2404.05892*, 2024.
 - Bo Peng, Ruichong Zhang, Daniel Goldstein, Eric Alcaide, Xingjian Du, Haowen Hou, Jiaju Lin, Jiaxing Liu, Janna Lu, William Merrill, et al. RWKV-7 "Goose" with expressive dynamic state evolution. *arXiv preprint arXiv:2503.14456*, 2025.
 - Zhen Qin, Songlin Yang, Weixuan Sun, Xuyang Shen, Dong Li, Weigao Sun, and Yiran Zhong. HGRN2: Gated linear RNNs with state expansion. *arXiv preprint arXiv:2404.07904*, 2024.
-- Qwen Team. Qwen3-Next: Towards ultimate training & inference efficiency. Qwen Blog, September 2025. URL <https://qwen.ai/blog?id=4074cca80393150c248e508aa62983f9cb7d27cd>.
+- Qwen Team. Qwen3-Next: Towards ultimate training & inference efficiency. Qwen Blog, September 2025. URL [https://qwen.ai/blog?id=4074cca80393150c248e508aa62983f9cb7d27cd](https://qwen.ai/blog?id=4074cca80393150c248e508aa62983f9cb7d27cd).
 - David Rein, Betty Li Hou, Asa Cooper Stickland, Jackson Petty, Richard Yuanzhe Pang, Julien Dirani, Julian Michael, and Samuel R Bowman. GPQA: A graduate-level Google-proof Q&A benchmark. *arXiv preprint arXiv:2311.12022*, 2023.
 - Imanol Schlag, Kazuki Irie, and Jürgen Schmidhuber. Linear transformers are secretly fast weight programmers. In *International Conference on Machine Learning*, pp. 9355–9366. PMLR, 2021.
-- Julien Siems, Timur Carstensen, Arber Zela, Frank Hutter, Massimiliano Pontil, and Riccardo Grazzi. DeltaProduct: Improving state-tracking in linear RNNs via Householder products, 2025. URL <https://arxiv.org/abs/2502.10297>.
+- Julien Siems, Timur Carstensen, Arber Zela, Frank Hutter, Massimiliano Pontil, and Riccardo Grazzi. DeltaProduct: Improving state-tracking in linear RNNs via Householder products, 2025. URL [https://arxiv.org/abs/2502.10297](https://arxiv.org/abs/2502.10297).
 - Yutao Sun, Li Dong, Shaohan Huang, Shuming Ma, Yuqing Xia, Jilong Xue, Jianyong Wang, and Furu Wei. Retentive network: A successor to transformer for large language models. *arXiv preprint arXiv:2307.08621*, 2023.
 - Kimi Team, Yu Zhang, Zongyu Lin, Xingcheng Yao, Jiaxi Hu, Fanqing Meng, Chengyin Liu, Xin Men, Songlin Yang, Zhiyuan Li, et al. Kimi Linear: An expressive, efficient attention architecture. *arXiv preprint arXiv:2510.26692*, 2025.
 - Kimi Team, Tongtong Bai, Yifan Bai, Yiping Bao, Jianfeng Cai, Xinyuan Cai, Peizhou Cao, Yuxuan Cao, Ziwei Chai, Y Charles, et al. Kimi K3: Open frontier intelligence. *arXiv preprint arXiv:2607.24653*, 2026.
@@ -362,17 +378,23 @@ $$
 - Yubo Wang, Xueguang Ma, Ge Zhang, Yuansheng Ni, Abhranil Chandra, Shiguang Guo, Weiming Ren, Aaran Arulraj, Xuan He, Ziyan Jiang, et al. MMLU-Pro: A more robust and challenging multi-task language understanding benchmark. *Advances in Neural Information Processing Systems*, 37:95266–95290, 2024.
 - Samuel Williams, Andrew Waterman, and David Patterson. Roofline: an insightful visual performance model for multicore architectures. *Communications of the ACM*, 52(4):65–76, 2009.
 - Guangxuan Xiao, Ji Lin, Mickael Seznec, Hao Wu, Julien Demouth, and Song Han. SmoothQuant: Accurate and efficient post-training quantization for large language models. In *International Conference on Machine Learning*, pp. 38087–38099. PMLR, 2023.
-- Songlin Yang and Yu Zhang. FLA: A Triton-based library for hardware-efficient implementations of linear attention mechanism, January 2024. URL <https://github.com/fla-org/flash-linear-attention>.
+- Songlin Yang and Yu Zhang. FLA: A Triton-based library for hardware-efficient implementations of linear attention mechanism, January 2024. URL [https://github.com/fla-org/flash-linear-attention](https://github.com/fla-org/flash-linear-attention).
 - Songlin Yang, Bailin Wang, Yikang Shen, Rameswar Panda, and Yoon Kim. Gated linear attention transformers with hardware-efficient training. *arXiv preprint arXiv:2312.06635*, 2023.
 - Songlin Yang, Bailin Wang, Yu Zhang, Yikang Shen, and Yoon Kim. Parallelizing linear transformers with the delta rule over sequence length. *Advances in Neural Information Processing Systems*, 37:115491–115522, 2024.
 - Songlin Yang, Jan Kautz, and Ali Hatamizadeh. Gated delta networks: Improving Mamba2 with delta rule. In *International Conference on Learning Representations*, volume 2025, pp. 29687–29707, 2025.
 - Yuxuan Yue, Xing Hu, Dawei Yang, Zhihang Yuan, Zixu Jiang, Zhixuan Chen, Jiangyong Yu, and Sifan Zhou. MambaQuant: Quantizing the Mamba family with variance aligned rotation methods. In *International Conference on Learning Representations*, volume 2025, pp. 33231–33250, 2025.
-- Z.ai. GLM-5.3-Flash: Frontier intelligence, flash cost. Z.ai Blog, August 2026. URL <https://z.ai/blog/glm-5.3-flash>.
+- Z.ai. GLM-5.3-Flash: Frontier intelligence, flash cost. Z.ai Blog, August 2026. URL [https://z.ai/blog/glm-5.3-flash](https://z.ai/blog/glm-5.3-flash).
 - Amir Zandieh, Majid Daliri, Majid Hadian, and Vahab Mirrokni. TurboQuant: Online vector quantization with near-optimal distortion rate. In *International Conference on Learning Representations*, volume 2026, pp. 56418–56439, 2026.
+
+
 
 ---
 
+
+
 # 附录
+
+
 
 ## A 通用更新形式的实例
 
@@ -386,16 +408,18 @@ $$
 
 **表 4**：式 (1) 的实例。DeltaProduct 对每个 token 施加 $$n$$ 个 delta 规则子步，每个子步都是式 (1) 的一个实例。最后一列给出一条缓冲更新 $$(d_i,\tilde k_i,u_i)$$ 中所含数值的个数。
 
-| 模型 | $$D_t$$ | $$\tilde k_t$$ | $$b_t$$ | 记录大小 |
-|:---|:---:|:---:|:---:|:---:|
-| Linear Attention | $$I$$ | $$k_t$$ | $$0$$ | $$d_k+d_v$$ |
-| RetNet | $$\gamma I$$ | $$k_t$$ | $$0$$ | $$d_k+d_v$$ |
-| Mamba2 | $$\alpha_t I$$ | $$k_t$$ | $$0$$ | $$1+d_k+d_v$$ |
-| GLA / RWKV6 / HGRN2 | $$\mathrm{Diag}(\alpha_t)$$ | $$k_t$$ | $$0$$ | $$2d_k+d_v$$ |
-| DeltaNet | $$I$$ | $$\beta_t k_t$$ | $$k_t$$ | $$d_k+d_v$$ |
-| Gated DeltaNet | $$\alpha_t I$$ | $$\beta_t k_t$$ | $$\alpha_t k_t$$ | $$1+d_k+d_v$$ |
-| KDA | $$\mathrm{Diag}(\alpha_t)$$ | $$\beta_t k_t$$ | $$\alpha_t\odot k_t$$ | $$2d_k+d_v$$ |
-| DeltaProduct，子步 $$j$$ | $$I$$ | $$\beta_{t,j}k_{t,j}$$ | $$k_{t,j}$$ | $$d_k+d_v$$ |
+
+| 模型                    | $$D_t$$                     | $$\tilde k_t$$         | $$b_t$$               | 记录大小          |
+| --------------------- | --------------------------- | ---------------------- | --------------------- | ------------- |
+| Linear Attention      | $$I$$                       | $$k_t$$                | $$0$$                 | $$d_k+d_v$$   |
+| RetNet                | $$\gamma I$$                | $$k_t$$                | $$0$$                 | $$d_k+d_v$$   |
+| Mamba2                | $$\alpha_t I$$              | $$k_t$$                | $$0$$                 | $$1+d_k+d_v$$ |
+| GLA / RWKV6 / HGRN2   | $$\mathrm{Diag}(\alpha_t)$$ | $$k_t$$                | $$0$$                 | $$2d_k+d_v$$  |
+| DeltaNet              | $$I$$                       | $$\beta_t k_t$$        | $$k_t$$               | $$d_k+d_v$$   |
+| Gated DeltaNet        | $$\alpha_t I$$              | $$\beta_t k_t$$        | $$\alpha_t k_t$$      | $$1+d_k+d_v$$ |
+| KDA                   | $$\mathrm{Diag}(\alpha_t)$$ | $$\beta_t k_t$$        | $$\alpha_t\odot k_t$$ | $$2d_k+d_v$$  |
+| DeltaProduct，子步 $$j$$ | $$I$$                       | $$\beta_{t,j}k_{t,j}$$ | $$k_{t,j}$$           | $$d_k+d_v$$   |
+
 
 **Gated DeltaNet 与 KDA。** 展开原始的更新公式即可得到表 4 中对应的行：
 
@@ -420,6 +444,8 @@ $$
 这样每个 token 贡献两条秩一记录，处理方式与 $$n=2$$ 的 DeltaProduct token 相同。
 
 ## B 推导
+
+
 
 ### B.1 量化引起的偏差的传播
 
@@ -490,47 +516,42 @@ $$
 
 **表 5**：完整下游性能（%，越高越好）。每个比特宽度内，各列最佳分数以粗体标出。
 
-<table>
-<thead>
-<tr><th rowspan="2" align="left">方法</th>
-<th colspan="5">Qwen3.5-9B</th>
-<th colspan="5">Qwen3.5-35B-A3B</th>
-<th colspan="5">Kimi-Linear-48B-A3B</th>
-</tr>
-<tr><th>GSM</th><th>AIME</th><th>GPQA</th><th>LCB</th><th>MMLU</th><th>GSM</th><th>AIME</th><th>GPQA</th><th>LCB</th><th>MMLU</th><th>GSM</th><th>AIME</th><th>GPQA</th><th>LCB</th><th>MMLU</th></tr>
-</thead>
-<tbody>
-<tr><td align="left">FP32</td><td align="right">96.1</td><td align="right">87.9</td><td align="right">81.3</td><td align="right">64.1</td><td align="right">83.3</td><td align="right">96.7</td><td align="right">91.5</td><td align="right">84.7</td><td align="right">75.6</td><td align="right">85.9</td><td align="right">92.1</td><td align="right">67.5</td><td align="right">70.3</td><td align="right">41.4</td><td align="right">72.4</td></tr>
-<tr><td align="left">BF16</td><td align="right">94.9</td><td align="right">72.1</td><td align="right">66.2</td><td align="right">49.6</td><td align="right">81.0</td><td align="right">96.6</td><td align="right">85.8</td><td align="right">79.3</td><td align="right">67.2</td><td align="right">85.2</td><td align="right">92.1</td><td align="right">64.3</td><td align="right">68.1</td><td align="right">41.0</td><td align="right">64.0</td></tr>
-<tr><td colspan="16" align="left"><i>8 比特方法</i></td></tr>
-<tr style="background:#E4EEFB"><td align="left"><b>LeapQuant（本文）</b></td><td align="right"><b>96.3</b></td><td align="right"><b>87.9</b></td><td align="right"><b>81.8</b></td><td align="right"><b>64.1</b></td><td align="right"><b>83.8</b></td><td align="right"><b>96.5</b></td><td align="right"><b>91.0</b></td><td align="right"><b>83.9</b></td><td align="right"><b>76.1</b></td><td align="right"><b>85.8</b></td><td align="right">92.0</td><td align="right"><b>68.3</b></td><td align="right"><b>69.8</b></td><td align="right">41.3</td><td align="right">72.1</td></tr>
-<tr><td align="left">FP8 逐张量</td><td align="right">79.2</td><td align="right">14.6</td><td align="right">34.3</td><td align="right">21.4</td><td align="right">42.6</td><td align="right">86.7</td><td align="right">29.6</td><td align="right">39.9</td><td align="right">26.7</td><td align="right">56.4</td><td align="right">91.8</td><td align="right">25.6</td><td align="right">46.6</td><td align="right">16.0</td><td align="right">57.0</td></tr>
-<tr><td align="left">FP8 逐通道</td><td align="right">84.2</td><td align="right">0.8</td><td align="right">13.6</td><td align="right">11.5</td><td align="right">46.6</td><td align="right">76.9</td><td align="right">0.0</td><td align="right">5.6</td><td align="right">8.4</td><td align="right">36.6</td><td align="right">91.6</td><td align="right">35.4</td><td align="right">57.6</td><td align="right">16.5</td><td align="right">65.5</td></tr>
-<tr><td align="left">FP8 逐组</td><td align="right">71.2</td><td align="right">0.0</td><td align="right">2.5</td><td align="right">2.3</td><td align="right">25.8</td><td align="right">67.2</td><td align="right">0.0</td><td align="right">1.5</td><td align="right">2.3</td><td align="right">24.9</td><td align="right">91.7</td><td align="right">25.3</td><td align="right">47.6</td><td align="right">15.8</td><td align="right">63.5</td></tr>
-<tr><td align="left">MXFP8</td><td align="right">67.9</td><td align="right">7.1</td><td align="right">24.2</td><td align="right">15.3</td><td align="right">32.2</td><td align="right">80.6</td><td align="right">29.6</td><td align="right">36.4</td><td align="right">29.8</td><td align="right">45.5</td><td align="right">91.4</td><td align="right">43.5</td><td align="right">50.3</td><td align="right">23.4</td><td align="right">67.0</td></tr>
-<tr><td align="left">INT8 逐张量</td><td align="right">38.5</td><td align="right">0.0</td><td align="right">3.0</td><td align="right">3.1</td><td align="right">25.1</td><td align="right">10.2</td><td align="right">0.0</td><td align="right">3.5</td><td align="right">1.5</td><td align="right">8.5</td><td align="right">89.9</td><td align="right">5.3</td><td align="right">31.3</td><td align="right">8.4</td><td align="right">54.8</td></tr>
-<tr><td align="left">INT8 逐通道</td><td align="right">53.5</td><td align="right">7.1</td><td align="right">26.8</td><td align="right">9.2</td><td align="right">44.3</td><td align="right">16.5</td><td align="right">0.0</td><td align="right">0.0</td><td align="right">3.1</td><td align="right">6.8</td><td align="right">91.8</td><td align="right">52.8</td><td align="right">65.8</td><td align="right">35.5</td><td align="right">64.5</td></tr>
-<tr><td align="left">KVQuant</td><td align="right">95.1</td><td align="right">74.6</td><td align="right">70.2</td><td align="right">59.5</td><td align="right">82.4</td><td align="right">95.8</td><td align="right">76.3</td><td align="right">69.7</td><td align="right">44.3</td><td align="right">83.5</td><td align="right">92.0</td><td align="right">66.6</td><td align="right">69.7</td><td align="right"><b>42.1</b></td><td align="right">65.0</td></tr>
-<tr><td align="left">QuaRot</td><td align="right">93.1</td><td align="right">49.6</td><td align="right">57.1</td><td align="right">38.2</td><td align="right">73.1</td><td align="right">80.7</td><td align="right">32.9</td><td align="right">36.4</td><td align="right">15.3</td><td align="right">56.0</td><td align="right"><b>92.6</b></td><td align="right">63.3</td><td align="right">69.2</td><td align="right">36.6</td><td align="right"><b>73.1</b></td></tr>
-<tr><td align="left">TurboQuant</td><td align="right">94.8</td><td align="right">70.8</td><td align="right">61.1</td><td align="right">45.0</td><td align="right">80.5</td><td align="right">82.9</td><td align="right">10.4</td><td align="right">22.7</td><td align="right">15.3</td><td align="right">52.7</td><td align="right">92.3</td><td align="right">57.5</td><td align="right">69.2</td><td align="right">41.2</td><td align="right">69.0</td></tr>
-<tr><td colspan="16" align="left"><i>6 比特方法</i></td></tr>
-<tr style="background:#E4EEFB"><td align="left"><b>LeapQuant（本文）</b></td><td align="right"><b>95.5</b></td><td align="right"><b>85.8</b></td><td align="right"><b>79.8</b></td><td align="right"><b>59.5</b></td><td align="right"><b>81.7</b></td><td align="right"><b>95.2</b></td><td align="right"><b>88.8</b></td><td align="right"><b>83.8</b></td><td align="right"><b>68.7</b></td><td align="right"><b>79.5</b></td><td align="right">91.8</td><td align="right"><b>66.1</b></td><td align="right"><b>66.2</b></td><td align="right"><b>35.9</b></td><td align="right"><b>73.4</b></td></tr>
-<tr><td align="left">NVFP6</td><td align="right">66.7</td><td align="right">0.4</td><td align="right">18.7</td><td align="right">12.2</td><td align="right">28.3</td><td align="right">75.4</td><td align="right">13.8</td><td align="right">34.3</td><td align="right">25.2</td><td align="right">46.3</td><td align="right">92.5</td><td align="right">30.8</td><td align="right">52.0</td><td align="right">25.2</td><td align="right">67.4</td></tr>
-<tr><td align="left">MXFP6</td><td align="right">15.9</td><td align="right">0.0</td><td align="right">1.0</td><td align="right">3.1</td><td align="right">8.7</td><td align="right">37.1</td><td align="right">0.0</td><td align="right">7.1</td><td align="right">9.2</td><td align="right">23.6</td><td align="right">91.8</td><td align="right">37.1</td><td align="right">53.5</td><td align="right">19.1</td><td align="right">66.7</td></tr>
-<tr><td align="left">INT6 逐通道</td><td align="right">50.6</td><td align="right">0.0</td><td align="right">5.6</td><td align="right">1.5</td><td align="right">23.5</td><td align="right">1.0</td><td align="right">0.0</td><td align="right">3.0</td><td align="right">0.0</td><td align="right">3.9</td><td align="right">91.3</td><td align="right">22.9</td><td align="right">50.0</td><td align="right">13.7</td><td align="right">64.2</td></tr>
-<tr><td align="left">KVQuant</td><td align="right">79.3</td><td align="right">4.2</td><td align="right">23.2</td><td align="right">13.7</td><td align="right">40.5</td><td align="right">59.8</td><td align="right">0.0</td><td align="right">10.1</td><td align="right">2.3</td><td align="right">21.6</td><td align="right">91.9</td><td align="right">55.0</td><td align="right"><b>66.2</b></td><td align="right">29.8</td><td align="right">71.8</td></tr>
-<tr><td align="left">QuaRot</td><td align="right">51.9</td><td align="right">0.0</td><td align="right">10.1</td><td align="right">3.1</td><td align="right">26.6</td><td align="right">8.8</td><td align="right">0.0</td><td align="right">0.5</td><td align="right">0.0</td><td align="right">2.9</td><td align="right">92.5</td><td align="right">25.4</td><td align="right">43.9</td><td align="right">17.6</td><td align="right">64.2</td></tr>
-<tr><td align="left">TurboQuant</td><td align="right">87.5</td><td align="right">27.5</td><td align="right">29.8</td><td align="right">16.0</td><td align="right">61.2</td><td align="right">54.1</td><td align="right">0.4</td><td align="right">5.1</td><td align="right">4.6</td><td align="right">16.1</td><td align="right"><b>92.7</b></td><td align="right">48.8</td><td align="right">64.7</td><td align="right"><b>35.9</b></td><td align="right">72.7</td></tr>
-<tr><td colspan="16" align="left"><i>4 比特方法</i></td></tr>
-<tr style="background:#E4EEFB"><td align="left"><b>LeapQuant（本文）</b></td><td align="right"><b>95.9</b></td><td align="right"><b>58.1</b></td><td align="right"><b>65.7</b></td><td align="right"><b>34.0</b></td><td align="right"><b>80.2</b></td><td align="right"><b>96.0</b></td><td align="right"><b>59.2</b></td><td align="right"><b>57.6</b></td><td align="right"><b>37.4</b></td><td align="right"><b>81.4</b></td><td align="right"><b>92.0</b></td><td align="right"><b>67.9</b></td><td align="right"><b>69.2</b></td><td align="right"><b>40.5</b></td><td align="right"><b>73.4</b></td></tr>
-<tr><td align="left">NVFP4</td><td align="right">0.4</td><td align="right">0.0</td><td align="right">0.0</td><td align="right">0.0</td><td align="right">2.0</td><td align="right">0.4</td><td align="right">0.0</td><td align="right">0.0</td><td align="right">0.0</td><td align="right">0.3</td><td align="right">85.1</td><td align="right">0.0</td><td align="right">6.4</td><td align="right">0.8</td><td align="right">9.7</td></tr>
-<tr><td align="left">MXFP4</td><td align="right">4.6</td><td align="right">0.0</td><td align="right">5.1</td><td align="right">0.0</td><td align="right">7.4</td><td align="right">3.9</td><td align="right">0.0</td><td align="right">4.5</td><td align="right">0.8</td><td align="right">5.5</td><td align="right">87.7</td><td align="right">4.2</td><td align="right">26.9</td><td align="right">8.7</td><td align="right">53.1</td></tr>
-<tr><td align="left">INT4 逐通道</td><td align="right">0.2</td><td align="right">0.0</td><td align="right">6.6</td><td align="right">0.0</td><td align="right">5.8</td><td align="right">0.2</td><td align="right">0.0</td><td align="right">0.0</td><td align="right">0.0</td><td align="right">0.7</td><td align="right">78.1</td><td align="right">0.0</td><td align="right">7.1</td><td align="right">0.8</td><td align="right">28.8</td></tr>
-<tr><td align="left">KVQuant</td><td align="right">1.1</td><td align="right">0.0</td><td align="right">0.0</td><td align="right">0.0</td><td align="right">1.0</td><td align="right">0.0</td><td align="right">0.0</td><td align="right">0.0</td><td align="right">0.0</td><td align="right">0.0</td><td align="right">89.6</td><td align="right">4.2</td><td align="right">19.7</td><td align="right">2.3</td><td align="right">46.9</td></tr>
-<tr><td align="left">QuaRot</td><td align="right">0.6</td><td align="right">0.0</td><td align="right">0.5</td><td align="right">0.0</td><td align="right">1.6</td><td align="right">0.0</td><td align="right">0.0</td><td align="right">0.0</td><td align="right">0.0</td><td align="right">0.0</td><td align="right">84.3</td><td align="right">0.8</td><td align="right">15.2</td><td align="right">1.5</td><td align="right">38.2</td></tr>
-<tr><td align="left">TurboQuant</td><td align="right">41.6</td><td align="right">3.3</td><td align="right">26.8</td><td align="right">13.0</td><td align="right">47.4</td><td align="right">0.0</td><td align="right">0.0</td><td align="right">0.0</td><td align="right">0.0</td><td align="right">0.3</td><td align="right">90.3</td><td align="right">24.2</td><td align="right">63.1</td><td align="right">26.7</td><td align="right">69.5</td></tr>
-</tbody>
-</table>
+
+| 方法                | Qwen3.5-9B | Qwen3.5-35B-A3B | **Kimi-Linear-48B-A3B** |          |          |          |          |          |          |          |          |          |          |          |          |
+| ----------------- | ---------- | --------------- | ----------------------- | -------- | -------- | -------- | -------- | -------- | -------- | -------- | -------- | -------- | -------- | -------- | -------- |
+| GSM               | AIME       | GPQA            | LCB                     | MMLU     | GSM      | AIME     | GPQA     | LCB      | MMLU     | GSM      | AIME     | GPQA     | LCB      | MMLU     |          |
+| FP32              | 96.1       | 87.9            | 81.3                    | 64.1     | 83.3     | 96.7     | 91.5     | 84.7     | 75.6     | 85.9     | 92.1     | 67.5     | 70.3     | 41.4     | 72.4     |
+| BF16              | 94.9       | 72.1            | 66.2                    | 49.6     | 81.0     | 96.6     | 85.8     | 79.3     | 67.2     | 85.2     | 92.1     | 64.3     | 68.1     | 41.0     | 64.0     |
+| *8 比特方法*          |            |                 |                         |          |          |          |          |          |          |          |          |          |          |          |          |
+| **LeapQuant（本文）** | **96.3**   | **87.9**        | **81.8**                | **64.1** | **83.8** | **96.5** | **91.0** | **83.9** | **76.1** | **85.8** | 92.0     | **68.3** | **69.8** | 41.3     | 72.1     |
+| FP8 逐张量           | 79.2       | 14.6            | 34.3                    | 21.4     | 42.6     | 86.7     | 29.6     | 39.9     | 26.7     | 56.4     | 91.8     | 25.6     | 46.6     | 16.0     | 57.0     |
+| FP8 逐通道           | 84.2       | 0.8             | 13.6                    | 11.5     | 46.6     | 76.9     | 0.0      | 5.6      | 8.4      | 36.6     | 91.6     | 35.4     | 57.6     | 16.5     | 65.5     |
+| FP8 逐组            | 71.2       | 0.0             | 2.5                     | 2.3      | 25.8     | 67.2     | 0.0      | 1.5      | 2.3      | 24.9     | 91.7     | 25.3     | 47.6     | 15.8     | 63.5     |
+| MXFP8             | 67.9       | 7.1             | 24.2                    | 15.3     | 32.2     | 80.6     | 29.6     | 36.4     | 29.8     | 45.5     | 91.4     | 43.5     | 50.3     | 23.4     | 67.0     |
+| INT8 逐张量          | 38.5       | 0.0             | 3.0                     | 3.1      | 25.1     | 10.2     | 0.0      | 3.5      | 1.5      | 8.5      | 89.9     | 5.3      | 31.3     | 8.4      | 54.8     |
+| INT8 逐通道          | 53.5       | 7.1             | 26.8                    | 9.2      | 44.3     | 16.5     | 0.0      | 0.0      | 3.1      | 6.8      | 91.8     | 52.8     | 65.8     | 35.5     | 64.5     |
+| KVQuant           | 95.1       | 74.6            | 70.2                    | 59.5     | 82.4     | 95.8     | 76.3     | 69.7     | 44.3     | 83.5     | 92.0     | 66.6     | 69.7     | **42.1** | 65.0     |
+| QuaRot            | 93.1       | 49.6            | 57.1                    | 38.2     | 73.1     | 80.7     | 32.9     | 36.4     | 15.3     | 56.0     | **92.6** | 63.3     | 69.2     | 36.6     | **73.1** |
+| TurboQuant        | 94.8       | 70.8            | 61.1                    | 45.0     | 80.5     | 82.9     | 10.4     | 22.7     | 15.3     | 52.7     | 92.3     | 57.5     | 69.2     | 41.2     | 69.0     |
+| *6 比特方法*          |            |                 |                         |          |          |          |          |          |          |          |          |          |          |          |          |
+| **LeapQuant（本文）** | **95.5**   | **85.8**        | **79.8**                | **59.5** | **81.7** | **95.2** | **88.8** | **83.8** | **68.7** | **79.5** | 91.8     | **66.1** | **66.2** | **35.9** | **73.4** |
+| NVFP6             | 66.7       | 0.4             | 18.7                    | 12.2     | 28.3     | 75.4     | 13.8     | 34.3     | 25.2     | 46.3     | 92.5     | 30.8     | 52.0     | 25.2     | 67.4     |
+| MXFP6             | 15.9       | 0.0             | 1.0                     | 3.1      | 8.7      | 37.1     | 0.0      | 7.1      | 9.2      | 23.6     | 91.8     | 37.1     | 53.5     | 19.1     | 66.7     |
+| INT6 逐通道          | 50.6       | 0.0             | 5.6                     | 1.5      | 23.5     | 1.0      | 0.0      | 3.0      | 0.0      | 3.9      | 91.3     | 22.9     | 50.0     | 13.7     | 64.2     |
+| KVQuant           | 79.3       | 4.2             | 23.2                    | 13.7     | 40.5     | 59.8     | 0.0      | 10.1     | 2.3      | 21.6     | 91.9     | 55.0     | **66.2** | 29.8     | 71.8     |
+| QuaRot            | 51.9       | 0.0             | 10.1                    | 3.1      | 26.6     | 8.8      | 0.0      | 0.5      | 0.0      | 2.9      | 92.5     | 25.4     | 43.9     | 17.6     | 64.2     |
+| TurboQuant        | 87.5       | 27.5            | 29.8                    | 16.0     | 61.2     | 54.1     | 0.4      | 5.1      | 4.6      | 16.1     | **92.7** | 48.8     | 64.7     | **35.9** | 72.7     |
+| *4 比特方法*          |            |                 |                         |          |          |          |          |          |          |          |          |          |          |          |          |
+| **LeapQuant（本文）** | **95.9**   | **58.1**        | **65.7**                | **34.0** | **80.2** | **96.0** | **59.2** | **57.6** | **37.4** | **81.4** | **92.0** | **67.9** | **69.2** | **40.5** | **73.4** |
+| NVFP4             | 0.4        | 0.0             | 0.0                     | 0.0      | 2.0      | 0.4      | 0.0      | 0.0      | 0.0      | 0.3      | 85.1     | 0.0      | 6.4      | 0.8      | 9.7      |
+| MXFP4             | 4.6        | 0.0             | 5.1                     | 0.0      | 7.4      | 3.9      | 0.0      | 4.5      | 0.8      | 5.5      | 87.7     | 4.2      | 26.9     | 8.7      | 53.1     |
+| INT4 逐通道          | 0.2        | 0.0             | 6.6                     | 0.0      | 5.8      | 0.2      | 0.0      | 0.0      | 0.0      | 0.7      | 78.1     | 0.0      | 7.1      | 0.8      | 28.8     |
+| KVQuant           | 1.1        | 0.0             | 0.0                     | 0.0      | 1.0      | 0.0      | 0.0      | 0.0      | 0.0      | 0.0      | 89.6     | 4.2      | 19.7     | 2.3      | 46.9     |
+| QuaRot            | 0.6        | 0.0             | 0.5                     | 0.0      | 1.6      | 0.0      | 0.0      | 0.0      | 0.0      | 0.0      | 84.3     | 0.8      | 15.2     | 1.5      | 38.2     |
+| TurboQuant        | 41.6       | 3.3             | 26.8                    | 13.0     | 47.4     | 0.0      | 0.0      | 0.0      | 0.0      | 0.3      | 90.3     | 24.2     | 63.1     | 26.7     | 69.5     |
+
+
+
 
 【译注：GSM = GSM8K；其余缩写同表 1。】
 
@@ -552,13 +573,17 @@ $$
 
 **表 6**：下游评估的生成设置。
 
-| 模型 | 温度 | Top-$$p$$ | Top-$$k$$ | Presence 惩罚 | 思考模式 | 最大输出长度 |
-|:---|:---:|:---:|:---:|:---:|:---:|---:|
-| Qwen3.5-9B | 1.0 | 0.95 | 20 | 1.5 | 开 | 81,920 |
-| Qwen3.5-35B-A3B | 1.0 | 0.95 | 20 | 1.5 | 开 | 81,920 |
-| Kimi-Linear-48B-A3B | 1.0 | 1.0 | – | 0 | – | 65,536 |
+
+| 模型                  | 温度  | Top-$$p$$ | Top-$$k$$ | Presence 惩罚 | 思考模式 | 最大输出长度 |
+| ------------------- | --- | --------- | --------- | ----------- | ---- | ------ |
+| Qwen3.5-9B          | 1.0 | 0.95      | 20        | 1.5         | 开    | 81,920 |
+| Qwen3.5-35B-A3B     | 1.0 | 0.95      | 20        | 1.5         | 开    | 81,920 |
+| Kimi-Linear-48B-A3B | 1.0 | 1.0       | –         | 0           | –    | 65,536 |
+
 
 ---
+
+
 
 ## 附：LaTeX 源码中被注释掉的两段声明
 

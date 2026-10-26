@@ -1,10 +1,11 @@
-"""AIME 2026 and GPQA-Diamond accuracy of running ATOM servers, thinking mode.
+"""AIME 2026, GPQA-Diamond and MMLU-Pro accuracy of running ATOM servers.
 
 As in the paper (section 4.1, appendix E): the model card's thinking-mode
 sampling, three samples per question, up to 81,920 output tokens.  Each
 (question, sample) becomes one line of ``results_reason/<tag>/<task>.jsonl``
-as soon as it finishes, so an interrupted run resumes where it stopped; the
-full replies go to ``<task>_outputs.jsonl`` next to it.
+(``--out`` moves ``results_reason``) as soon as it finishes, so an interrupted
+run resumes where it stopped; the full replies go to ``<task>_outputs.jsonl``
+next to it.  MMLU-Pro runs only when asked for (``--tasks``).
 
     python reason_eval.py --tag fp32 --url http://localhost:8000
     python reason_eval.py --tag bf16 --url http://localhost:8000 --url http://localhost:8001
@@ -15,6 +16,9 @@ Kimi-Linear (an instruct model: no thinking, shorter replies):
     python reason_eval.py --tag kimi-fp32 --model <Kimi-Linear path> \
         --sampling '{"temperature": 0.6, "top_p": 1.0, "top_k": -1}' --max-tokens 32768
     python reason_eval.py --summary --base kimi-fp32 --tags kimi-fp32 kimi-lq
+
+The paper samples it at temperature 1.0, top_p 1.0, up to 65,536 tokens, and
+scores MMLU-Pro as well; ``run_atom.sh kimi-reason`` runs that setting.
 """
 
 from __future__ import annotations
@@ -35,7 +39,7 @@ import aiohttp
 MODEL = "/shareddata/haoyanli/Qwen/Qwen3.8-Flash-Next"
 DATA = "/shareddata/huggingface/datasets"
 OUT = pathlib.Path(__file__).resolve().parent / "results_reason"
-TASKS = ("aime26", "gpqa")
+TASKS = ("aime26", "gpqa", "mmlupro")
 # min_p 0 and repetition_penalty 1 are the server's defaults already.
 SAMPLING = {"temperature": 1.0, "top_p": 0.95, "top_k": 20, "presence_penalty": 0.0}
 AIME_SUFFIX = "Please reason step by step, and put your final answer within \\boxed{}."
@@ -43,9 +47,13 @@ GPQA_SUFFIX = (
     "Please reason step by step, and put the letter of the correct option "
     "(A, B, C or D) within \\boxed{}."
 )
+MMLUPRO_SUFFIX = (
+    "Please reason step by step, and put the letter of the correct option within \\boxed{}."
+)
+LETTERS = {"gpqa": "ABCD", "mmlupro": "ABCDEFGHIJ"}
 
 
-def load_items(task: str, samples: int) -> list[dict]:
+def load_items(task: str, samples: int, limit: int | None = None) -> list[dict]:
     os.environ["HF_DATASETS_OFFLINE"] = "1"
     from datasets import load_dataset
 
@@ -56,6 +64,19 @@ def load_items(task: str, samples: int) -> list[dict]:
             for i, row in enumerate(ds):
                 prompt = f"{row['problem'].strip()}\n\n{AIME_SUFFIX}"
                 items.append(dict(idx=i, sample=s, prompt=prompt, gold=str(int(row["answer"]))))
+        return items
+    if task == "mmlupro":
+        ds = load_dataset("TIGER-Lab/MMLU-Pro", split="test", cache_dir=DATA)
+        # `limit` questions in a fixed random order, so a larger limit keeps the
+        # questions a smaller one ran and a resume only adds to them.
+        order = list(range(len(ds)))
+        random.Random("mmlupro").shuffle(order)
+        for s in range(samples):
+            for i in order[:limit]:
+                row = ds[i]
+                lines = [f"{LETTERS[task][j]}) {o.strip()}" for j, o in enumerate(row["options"])]
+                prompt = f"{row['question'].strip()}\n\n" + "\n".join(lines) + f"\n\n{MMLUPRO_SUFFIX}"
+                items.append(dict(idx=i, sample=s, prompt=prompt, gold=row["answer"]))
         return items
     ds = load_dataset("Idavidrein/gpqa", "gpqa_diamond", split="train", cache_dir=DATA)
     for s in range(samples):
@@ -98,10 +119,11 @@ def extract(task: str, content: str) -> str | None:
         nums = re.findall(r"\d+", s)
         # "277", "m+n=277": one integer.  "2^{10}" stays unparsed on purpose.
         return str(int(nums[0])) if len(nums) == 1 else None
+    letters = LETTERS[task]
     if box is not None:
-        m = re.search(r"\b([ABCD])\b", re.sub(r"\\text(?:bf)?\{([^}]*)\}", r"\1", box))
+        m = re.search(rf"\b([{letters}])\b", re.sub(r"\\text(?:bf)?\{([^}]*)\}", r"\1", box))
         return m.group(1) if m else None
-    found = re.findall(r"[Aa]nswer(?: is)?\s*:?\s*\**\(?([ABCD])\)?\b", content)
+    found = re.findall(rf"[Aa]nswer(?: is)?\s*:?\s*\**\(?([{letters}])\)?\b", content)
     return found[-1] if found else None
 
 
@@ -165,7 +187,8 @@ async def evaluate(args):
             for line in path.read_text().splitlines():
                 r = json.loads(line)
                 done.add((r["idx"], r["sample"]))
-        todo = [it for it in load_items(task, args.samples) if (it["idx"], it["sample"]) not in done]
+        items = load_items(task, args.samples, args.mmlupro_n)
+        todo = [it for it in items if (it["idx"], it["sample"]) not in done]
         print(f"{task}: {len(done)} done, {len(todo)} to run", flush=True)
         for it in todo:
             queue.put_nowait((task, it))
@@ -267,8 +290,10 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--tag", help="results_reason/<tag>; required unless --summary")
     ap.add_argument("--url", action="append", help="server base URL; repeat to spread the load")
-    ap.add_argument("--tasks", nargs="+", default=list(TASKS), choices=TASKS)
+    ap.add_argument("--tasks", nargs="+", default=["aime26", "gpqa"], choices=TASKS)
     ap.add_argument("--samples", type=int, default=3)
+    ap.add_argument("--mmlupro-n", type=int, help="MMLU-Pro: this many questions, default all 12,032")
+    ap.add_argument("--out", type=pathlib.Path, default=OUT, help="where the <tag> directories go")
     ap.add_argument("--max-tokens", type=int, default=81920)
     ap.add_argument("--concurrency", type=int, default=128, help="in-flight requests per URL")
     ap.add_argument("--model", default=MODEL)
@@ -280,6 +305,7 @@ if __name__ == "__main__":
     ap.add_argument("--base", default="fp32", help="--summary: the tag to compare against")
     ap.add_argument("--tags", nargs="+", help="--summary: only these tags")
     args = ap.parse_args()
+    OUT = args.out
     if args.summary:
         summary(args.base, args.tags)
     else:

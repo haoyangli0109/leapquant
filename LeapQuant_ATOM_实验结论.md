@@ -243,7 +243,7 @@ B=512 时 fold 占 1.32 ms，decode 占 3.64 ms。
 | LeapQuant | 56.7 | 52.7 | 48.8 | 38% |
 
 - **逐题对比 FP32**（更差/更好的题数）：AIME 7/6。GPQA 61/43，符号检验 p=0.095；截断算错时 61/47，p=0.21。
-- **两轮 GPQA 分开看**：第一轮（样本 0–2）低 2.6 分，p=0.045；第二轮（样本 3–5）低 1.2 分，p=0.23。方向一致但都不显著，约 2 分的小幅下降不能排除。
+- **两轮 GPQA 分开看**：第一轮（样本 0–2）低 2.6 分，p=0.045；第二轮（样本 3–5）低 1.2 分，p=0.23。方向一致但都不显著，约 2 分的小幅下降不能排除。2026-10-23 重测又低 1.7 分，两次合起来 p≈0.016，见“2026-10-23 Kimi-Linear 重测”。按论文设置（10-24）低 2.2 分，这一次单独不显著。
 - **截断和长度没有差别**：同一题同一样本，只有 FP32 截断的 142 对、只有 LeapQuant 截断的 159 对（p=0.36），输出长度中位数之比为 1.00。Qwen3.8 上 BF16 状态的退化表现为推理变长，这里没有出现。
 - **这个评测噪声大**：Kimi-Linear-Instruct 不是推理模型，约 37% 的回复写满 32,768 token，多是在推理里打转。单个样本的准确率在 49.5–58.1 之间。按原样判分时，截断的回复里只要出现过正确答案也算对，所以另给了截断算错的分数。
 
@@ -272,6 +272,7 @@ B=512 时 fold 占 1.32 ms，decode 占 3.64 ms。
 ## 限制
 
 - 不支持投机解码/MTP。
+- Kimi-Linear 上 LeapQuant 的 GPQA 三次都低约 2 分（1.9、1.7、2.2）。temperature 0.6 的两次合并 p≈0.016，按论文设置的一次单独不显著；MMLU-Pro、AIME 和 FP32 没有差别。
 - checkpoint 和运行中的请求共用状态池（`--max-num-seqs` 个槽）。池满时 checkpoint 会被挤掉，命中率随之下降：`--max-num-seqs 16` 同时跑 16 个请求时，GSM8K 命中率只有 6%。
 - 回放 kernel 现在支持每通道门控和 V 在前的布局。以前 KDA 开 ReplaySSM 时，从 decode checkpoint 恢复会丢记录，现在不会了。
 - **ATOM 原有的 ReplaySSM 在 flush 时有竞争，2026-10-23 已修复**：单 token 的 GDN 步像 LeapQuant 一样，把 flush 拆成单独一次 launch；MTP 的验证窗口和 KDA 仍在层 kernel 里 flush，改由最后一个读完记录的 program 写 k/g。
@@ -334,7 +335,20 @@ PYTHONPATH=$PWD/ablate_replay ABLATE_REPLAY=1 TAG=lq-noreplay bash run_atom.sh p
 TAGS="lq-cache lq-nocache lq-noreplay lq-noladder" bash run_atom.sh prefix-compare
 ```
 
-Kimi-Linear，单卡。`run_atom.sh` 的服务模式写死了 TP2+EP，所以服务和测速直接用命令：
+Kimi-Linear，单卡。`run_atom.sh` 的 `kimi-*` 模式按论文的设置（附录 E）起服务和评测，结果写到仓库外的 `../kimi_eval`：
+
+```bash
+HIP_VISIBLE_DEVICES=0 KSTATE=fp32 bash run_atom.sh kimi-server   # KSTATE：fp32、bf16、lq、rs
+HIP_VISIBLE_DEVICES=1 KSTATE=bf16 SERVER_PORT=8001 ENGINE_PORT=8016 bash run_atom.sh kimi-server
+HIP_VISIBLE_DEVICES=2 KSTATE=lq SERVER_PORT=8002 ENGINE_PORT=8026 bash run_atom.sh kimi-server
+TAG=fp32 bash run_atom.sh kimi-reason   # AIME、GPQA、MMLU-Pro；temperature 1.0，最长 65,536 token，3 个样本
+TAG=bf16 PORT=8001 bash run_atom.sh kimi-reason
+TAG=lq PORT=8002 bash run_atom.sh kimi-reason
+bash run_atom.sh kimi-summary
+TAG=fp32 bash run_atom.sh kimi-decode   # decode 测速，之后自动跑 decode_window.py
+```
+
+10-22 和 10-23 白天的测量（temperature 0.6，最长 32,768 token）用的是下面的命令：
 
 ```bash
 M=/shareddata/haoyanli/moonshotai/Kimi-Linear-48B-A3B-Instruct
@@ -411,3 +425,128 @@ TAG=rs-split bash run_atom.sh gsm8k
   - `results_gsm8k/rs-*`。
   - `results_prefix/kimi-rs-cache-{split,hybrid,hybrid-r2}.json`。
   - `logs_rs/`：服务、GSM8K 和测速的日志。
+
+## 2026-10-23 Kimi-Linear 重测
+
+用当前代码（ReplaySSM 竞争修复之后）在 Kimi-Linear-48B 上重测性能和精度，并加了每步存 BF16 状态（`ATOM_GDN_SSM_DTYPE=bf16`）作对照。单卡 TP1，CUDA graph，不开前缀缓存，512 个槽，服务命令和“复现”一节相同。
+
+- **结论**：
+  - LeapQuant 比 FP32 快 3–12%，状态少 42%；GSM8K、AIME 没有可测的差别，GPQA 低 1.7 分。
+  - GPQA 的下降和 10-22 那次（低 1.9 分）一致，两次合起来 p≈0.016，约 2 分的下降应该是真的。
+  - BF16 状态几乎一样快（LeapQuant 只快约 1%），状态更小（每请求 22.4 MB 对 25.1 MB），GPQA 也不掉点。在测过的 GSM8K、AIME、GPQA 上，LeapQuant 相对 BF16 没有显出收益。论文里 BF16 在 Kimi 上掉得最多的是 MMLU-Pro（72.4 → 64.0），这里没有测。按论文设置重测后，LeapQuant 相对 BF16 有收益，见“2026-10-24 Kimi-Linear 按论文设置重测”。
+- **KDA kernel**（20 层合计，每步，ms）：
+
+| B | FP32 | BF16 | ReplaySSM | LeapQuant | LeapQuant 对 FP32 | LeapQuant 对 BF16 |
+|---|---|---|---|---|---|---|
+| 32 | 0.68 | 0.44 | 0.61 | 0.42 | 1.61× | 1.05× |
+| 64 | 1.25 | 0.82 | 1.13 | 0.75 | 1.68× | 1.09× |
+| 128 | 2.42 | 1.47 | 1.99 | 1.35 | 1.79× | 1.09× |
+| 256 | 4.72 | 2.74 | 3.84 | 2.55 | 1.85× | 1.07× |
+| 512 | 9.45 | 5.37 | 7.66 | 5.08 | 1.86× | 1.06× |
+
+  FP32 比 10-22 慢（B=512 时 9.45 对 8.51 ms），LeapQuant 只慢 2%，所以倍数比上次的 1.52–1.77× 大。
+
+- **decode 每步耗时**（ms，含 flush 的平均步时，`decode_window.py`）：四种模式在同一张卡上轮流起服务，跑两轮，第二轮倒序，取平均。括号里是对 FP32 的倍数。
+
+| 并发 | FP32 | BF16 | ReplaySSM | LeapQuant |
+|---|---|---|---|---|
+| 32 | 8.28 | 8.00 (1.04×) | 8.07 (1.03×) | 8.04 (1.03×) |
+| 64 | 10.81 | 10.13 (1.07×) | 10.42 (1.04×) | 9.97 (1.08×) |
+| 128 | 14.90 | 13.64 (1.09×) | 13.63 (1.09×) | 13.48 (1.11×) |
+| 256 | 22.28 | 20.52 (1.09×) | 21.27 (1.05×) | 20.25 (1.10×) |
+| 512 | 33.16 | 30.23 (1.10×) | 32.39 (1.02×) | 29.74 (1.12×) |
+
+  - 两轮之间相差：FP32、BF16、LeapQuant 不超过 2.2%，ReplaySSM 3.9%。
+  - 不含 flush（中位数）：LeapQuant 1.04–1.16×，BF16 1.04–1.10×。
+  - LeapQuant 和 10-22（1.05–1.12×）一致。
+
+- **显存**：
+
+| 模式 | 每请求状态 | 512 个槽的状态池 | KV block | 上下文 40960 时的并发上限 |
+|---|---|---|---|---|
+| FP32 | 43.4 MB | 20.7 GB | 114.7 万 | 447 |
+| BF16 | 22.4 MB | 10.7 GB | 123.0 万 | 480 |
+| ReplaySSM | 53.9 MB | 25.7 GB | 110.5 万 | 431 |
+| LeapQuant | 25.1 MB | 12.0 GB | 121.9 万 | 476 |
+
+  上下文更短时（FP32 不超过 28K，BF16 和 LeapQuant 不超过 36K）都是 512 个槽先用完，省下的显存不增加并发。
+
+- **精度**：GSM8K 全部 1319 题，5-shot chat。AIME 2026 和 GPQA-Diamond 每题 6 个样本，temperature 0.6，最长 32,768 token，并发 128。
+
+| 模式 | GSM8K | AIME 2026 | GPQA-Diamond | GPQA（截断算错） | GPQA 截断数 |
+|---|---|---|---|---|---|
+| FP32 | 87.26 | 49.4 | 53.4 | 49.9 | 434 |
+| BF16 | 87.19 | 44.4 | 54.1 | 49.7 | 403 |
+| LeapQuant | 86.50 | 48.9 | 51.7 | 47.6 | 461 |
+
+  - 逐题对比 FP32（更差/更好的题数）：
+    - GSM8K：BF16 25/24，LeapQuant 32/22。
+    - AIME：BF16 11/6（p=0.33），LeapQuant 12/8（p=0.50）。
+    - GPQA：BF16 52/52，LeapQuant 63/44（p=0.081）。
+  - GPQA 上 LeapQuant 直接对 BF16：70/46（p=0.032）。同一题同一样本只有一方截断的，BF16 135 对、LeapQuant 193 对（p=0.002）。
+  - LeapQuant 的 GPQA 分成前后各 3 个样本：这次低 1.0、2.4 分，10-22 低 2.6、1.2 分，四次都更低，平均低 1.8 分。两次运行按 Stouffer 合并，p≈0.016。
+  - AIME 的绝对分数比 10-22 低（FP32 49.4 对 57.8），而 FP32 这条路径的代码没变过。30 道题里有 16 道在 6 个样本里有对有错，3 个样本的平均分标准差约 3.5 分，两次相差约 2.5 个标准差。三种模式是在同一次运行里比的，这个对比不受影响。
+
+- **和论文对比**（表 1，Kimi-Linear-48B-A3B，3 个种子）：FP32 的 AIME、GPQA 是 67.5、70.3，BF16 是 64.3、68.1，LeapQuant 是 68.3、69.8。
+  - BF16 一致：论文也说 Kimi 的输出短，对逐步存储不敏感，AIME、GPQA、LiveCodeBench 上都在 5 分以内。
+  - LeapQuant 的 AIME 一致。GPQA 论文低 0.5 分，这里两次都低约 1.8 分。按这里的逐题正确率估算，3 个种子时两种方法之差的标准差约 1.9 分（AIME 约 4.9 分），论文的数据排除不了这个幅度。
+  - 设置不同：论文用 temperature 1.0、最长 65,536 token，这里用 0.6、32,768 token。这里 GPQA 37%、AIME 46% 的回复写满上限，绝对分数比论文低约 17 分。LeapQuant 截断得更多，截断算错时差距是 2.3 分。按论文设置的结果见下一节。
+
+- **改动**：`kimi_k3.py` 的 prefill 写回状态时转换成状态池的 dtype。aiter 的 chunk KDA 不管初始状态是什么 dtype 都返回 fp32，原来的代码在 BF16 池上第一次 prefill 就报错退出；FP32 池上这个转换什么都不做。
+- **数据和日志**：`/home/haoyanli/o/lhy_atom/kimi_eval/`，不在这个仓库里。
+  - `results/<模式>-r{1,2}/`：decode 测速。
+  - `results_gsm8k/`、`results_reason/`：精度。
+  - `logs/`：服务和评测的日志；`kda_bench.log` 是 kernel 计时。
+  - 脚本：`serve.sh`（起服务）、`drive.sh`（起服务、跑任务、停服务）、`perf.sh`、`sweep.sh`、`accuracy.sh`、`kda_bench.py`（`leapquant_kda_bench.py` 加了 BF16）。
+
+## 2026-10-24 Kimi-Linear 按论文设置重测
+
+按论文附录 E 的设置重测 Kimi-Linear 的精度：temperature 1.0、top_p 1.0、不限 top_k、最长 65,536 token（模型长度 73,728），每题 3 个样本。题目是 AIME 2026 30 题、GPQA-Diamond 198 题、MMLU-Pro 全部 12,032 题。每种状态一张卡，并发 256（MMLU-Pro 后段 512），命令是 `run_atom.sh` 的 `kimi-*` 模式。LiveCodeBench 本地没有数据和判题环境，没有测。
+
+| 模式 | AIME 2026 | GPQA-Diamond | MMLU-Pro | 论文（AIME / GPQA / MMLU-Pro） |
+|---|---|---|---|---|
+| FP32 | 62.2 | 69.5 | 71.7 | 67.5 / 70.3 / 72.4 |
+| BF16 | 62.2 | 66.5 | 71.4 | 64.3 / 68.1 / 64.0 |
+| LeapQuant | 71.1 | 67.3 | 71.9 | 68.3 / 69.8 / 72.1 |
+
+- **结论**：
+  - FP32 和论文一致。LeapQuant 和 FP32 没有可测的差别。
+  - BF16 在 MMLU-Pro 上只低 0.3 分，没有复现论文的 8.4 分；但三项上都更容易写满上限。
+  - 相对 BF16，LeapQuant 在 MMLU-Pro 上显著更好，写满上限的也少得多。10-23 “没有显出收益”的结论只在 temperature 0.6 的设置下成立。
+- **逐题对比**（更差/更好的题数）：
+
+| 对比 | AIME | GPQA | MMLU-Pro |
+|---|---|---|---|
+| BF16 对 FP32 | 7/7 | 50/35（p=0.13） | 1902/1779（p=0.044） |
+| LeapQuant 对 FP32 | 4/9（p=0.27） | 47/39（p=0.45） | 1763/1855（p=0.13） |
+| LeapQuant 对 BF16 | 6/10（p=0.45） | 40/44 | 1748/1928（p=0.003） |
+
+- **写满 65,536 token**（共 90 / 594 / 36,096 条）：FP32 6 / 11 / 216，BF16 14 / 26 / 444，LeapQuant 4 / 12 / 195。
+  - 同一题同一样本只有一方写满的：BF16 对 FP32 是 10 对 2、22 对 7、366 对 138（p=0.039、0.008、7e-25）；LeapQuant 对 FP32 是 3 对 5、10 对 9、155 对 176，没有差别。
+  - BF16 的平均输出也更长，三项分别多 13%、10%、7%。这和论文说的 BF16 让推理变长一致，只是在 Kimi 上对分数的影响小得多。
+- **LeapQuant 的 GPQA**：这次低 2.2 分，但 3 个样本时差值的标准差约 1.9 分，单独不显著。加上 temperature 0.6 的两次（低 1.9、1.7 分），三次都更低。
+- **为什么这次分数比 temperature 0.6、32K 时高**：主要是温度，其次是输出上限。
+  - 拆分方法：把这次超过 32K 的回复都算错，就相当于“1.0 温度、32K 上限”。下表都是截断算错的分数：
+
+| 模式 | 任务 | 0.6、32K | 1.0、32K（模拟） | 1.0、64K |
+|---|---|---|---|---|
+| FP32 | GPQA | 49.9 | 63.1 | 69.4 |
+| BF16 | GPQA | 49.7 | 60.8 | 65.2 |
+| LeapQuant | GPQA | 47.6 | 62.1 | 67.2 |
+| FP32 | AIME | 49.4 | 55.6 | 62.2 |
+
+  - 温度贡献 GPQA 的 11–15 分。0.6 时 GPQA 有 34–39%、AIME 有 43–46% 的回复写满 32K，其中 GPQA 94%、AIME 85% 是在原地重复同一段话。判断标准是：尾部 300 个字符在全文出现 3 次以上，或尾部 2 万字符的 zlib 压缩率低于 0.15。
+    - 例如 GPQA 第 1 题的一个回复，最后 160 个字符在全文出现了 95 次，第一次出现在全文 11% 处，后面近九成的 token 都在重复。
+    - 温度低时采样接近贪心，一段话一旦开始重复，就很难再跳出来，这是长生成里常见的退化。1.0 的随机性能打断它：这次写满 64K 的只有 2%（GPQA）和 7%（AIME），而且大多不是重复。
+  - 上限贡献 GPQA 的 4–6 分。1.0 时回复更长：正常结束的 GPQA 回复中位数是 7.5K token，0.6 时是 3.8K。15–17% 的 GPQA 回复超过 32K，FP32 的 86 条里有 37 条最后答对。
+  - 0.6 时正常结束的回复其实更准（FP32 的 GPQA 78.6% 对 70.7%，AIME 90.8% 对 66.7%）。一方面打转的多是难题，留下的偏简单：0.6 时 6 个样本都没截断的 67 道 GPQA 题，1.0 时正确率 83.1%；截断 4–6 次的 57 道只有 50.9%。另一方面低温度本身更稳。但这点收益远小于打转丢掉的分数。
+  - 0.6 不是 Kimi-Linear 模型目录给的（目录里没有采样参数），论文用的是 1.0。
+  - 打转也放大了 0.6 时各状态之间的差别。那时 LeapQuant 的 GPQA 下降有一部分来自更多截断（只有一方截断的 154 对 127）；1.0 时两者截断一样多（10 对 9）。
+- **中途中断**：10-23 16:02（UTC）`/home/haoyanli` 写满，客户端和服务写不了文件，全部退出。AIME、GPQA 已经跑完，MMLU-Pro 完成的部分也都在。输出搬到 `/shareddata/haoyanli/kimi_eval` 后，MMLU-Pro 以 512 并发续跑完成，进程改在独立会话（`setsid`）里运行。
+- **数据和日志**：`/shareddata/haoyanli/kimi_eval/`，不在这个仓库里。
+  - `results_reason_paper/<模式>/`：每条结果和完整回复。
+  - `logs/`：服务和评测的日志。
+  - `analyze_paper.py`：上面的各项统计；`why_higher.py`：和 temperature 0.6 那次的拆分、打转检测；`resume_paper.sh`：续跑。
+- **改动**：
+  - `reason_eval.py` 加了 MMLU-Pro（`--tasks mmlupro`；`--mmlupro-n` 取固定顺序的前 N 题）和 `--out`。
+  - `run_atom.sh` 加了 `kimi-server`、`kimi-reason`、`kimi-summary`、`kimi-decode`、`kimi-gsm8k`。
