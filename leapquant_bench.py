@@ -1,4 +1,4 @@
-"""GDN decode cost per step (36 layers) on gfx950: FP32 in place, ReplaySSM, LeapQuant.
+"""GDN decode cost per step on gfx950: FP32 in place, ReplaySSM, LeapQuant.
 
 Steady state: every sequence sits at a random point of its window, and a
 profile spans `CAP - 1` steps, the flush period at T == 1, so each sequence
@@ -8,8 +8,14 @@ LeapQuant folds every layer in one launch per step (`leapquant_fold` over the
 stacked pools, as ATOM runs it); `--per-layer-fold` folds inside each layer's
 call instead.
 
+The default shape is Qwen3.8-Flash-Next per rank at TP2 (36 layers, 24 v heads,
+8 q/k heads); `--layers/--hv/--h` change it, e.g. `--layers 1 --hv 32 --h 16`
+for the paper's kernel figure. `bf16` keeps the per-step state in BF16 and
+`replayssm_bf16` gives ReplaySSM a BF16 checkpoint, the paper's per-window BF16.
+
     HIP_VISIBLE_DEVICES=6 python leapquant_bench.py
     HIP_VISIBLE_DEVICES=6 python leapquant_bench.py --modes leapquant --batch 512 --fold-warps 2 4 --breakdown
+    HIP_VISIBLE_DEVICES=6 python leapquant_bench.py --layers 1 --hv 32 --h 16 --batch 256 --rank 8
 """
 
 import argparse
@@ -74,8 +80,11 @@ def records(rec_dtype):
     )
 
 
-def bench_fp32(B, gen, **_):
-    states = [torch.randn(SLOTS, HV, K, V, device=dev).mul_(0.01) for _ in range(LAYERS)]
+def bench_fp32(B, gen, state_dtype=torch.float32, **_):
+    states = [
+        torch.randn(SLOTS, HV, K, V, device=dev).mul_(0.01).to(state_dtype)
+        for _ in range(LAYERS)
+    ]
     q, k, v, g, beta = inputs(B, gen)
     cu = torch.arange(B + 1, device=dev, dtype=torch.int32)
     idx = torch.randperm(SLOTS - 1, device=dev, generator=gen)[:B].to(torch.int32)
@@ -98,8 +107,11 @@ def phased_cursor(B, gen):
     return idx, write_pos
 
 
-def bench_replayssm(B, gen, **_):
-    ckpts = [torch.randn(SLOTS, HV, K, V, device=dev).mul_(0.01) for _ in range(LAYERS)]
+def bench_replayssm(B, gen, ckpt_dtype=torch.float32, **_):
+    ckpts = [
+        torch.randn(SLOTS, HV, K, V, device=dev).mul_(0.01).to(ckpt_dtype)
+        for _ in range(LAYERS)
+    ]
     bk, bu, bg = records(torch.bfloat16)
     q, k, v, g, beta = inputs(B, gen)
     cu = torch.arange(B + 1, device=dev, dtype=torch.int32)
@@ -149,21 +161,36 @@ def bench_leapquant(B, gen, fold_warps=2, iters=WARM_ITERS, per_layer_fold=False
     return profiled_ms(step, PERIOD)
 
 
-BENCH = {"fp32": bench_fp32, "replayssm": bench_replayssm, "leapquant": bench_leapquant}
+BENCH = {
+    "fp32": bench_fp32,
+    "bf16": lambda B, gen, **kw: bench_fp32(B, gen, state_dtype=torch.bfloat16, **kw),
+    "replayssm": bench_replayssm,
+    "replayssm_bf16": lambda B, gen, **kw: bench_replayssm(
+        B, gen, ckpt_dtype=torch.bfloat16, **kw
+    ),
+    "leapquant": bench_leapquant,
+}
 
 
 def main():
-    global CAP, PERIOD
+    global CAP, PERIOD, LAYERS, HV, H, RANK
     ap = argparse.ArgumentParser()
-    ap.add_argument("--modes", nargs="+", default=list(BENCH))
+    ap.add_argument("--modes", nargs="+", default=["fp32", "replayssm", "leapquant"], choices=list(BENCH))
     ap.add_argument("--batch", nargs="+", type=int, default=[32, 64, 128, 256, 512])
     ap.add_argument("--fold-warps", nargs="+", type=int, default=[2])
     ap.add_argument("--iters", nargs="+", type=int, default=[WARM_ITERS])
     ap.add_argument("--per-layer-fold", action="store_true")
     ap.add_argument("--cap", type=int, default=CAP)
+    ap.add_argument("--layers", type=int, default=LAYERS)
+    ap.add_argument("--hv", type=int, default=HV, help="v heads (one state per v head)")
+    ap.add_argument("--h", type=int, default=H, help="q/k heads")
+    ap.add_argument("--rank", type=int, default=RANK, help="LeapQuant compensator tokens")
     ap.add_argument("--breakdown", action="store_true")
     args = ap.parse_args()
     CAP, PERIOD = args.cap, args.cap - 1
+    LAYERS, HV, H, RANK = args.layers, args.hv, args.h, args.rank
+    print(f"shape: {LAYERS} layers, {HV} v heads, {H} q/k heads, K=V={K}; "
+          f"window p={PERIOD}, rank r={RANK}", flush=True)
 
     base = {}
     for mode in args.modes:
@@ -182,7 +209,7 @@ def main():
                     base[B] = ms
                 tag = mode + ("" if not kw else " " + ",".join(f"{k}={v}" for k, v in kw.items()))
                 vs = f"  {base[B] / ms:4.2f}x vs fp32" if B in base and mode != "fp32" else ""
-                print(f"{tag:42s} B={B:4d}: {ms:6.2f} ms/step{vs}", flush=True)
+                print(f"{tag:42s} B={B:4d}: {ms:7.3f} ms/step{vs}", flush=True)
                 if args.breakdown:
                     for name, t in sorted(per.items(), key=lambda x: -x[1]):
                         print(f"      {t:7.3f} ms  {name}")

@@ -26,14 +26,17 @@
 # 中断后重跑同一个命令会接着跑：测完的性能轮次和 GSM8K 跳过，AIME/GPQA 跳过已完成的样本。
 #
 # 其他可调的环境变量：CONC（并发档位）、TASKS、SAMPLES、GSM8K=0（不测 GSM8K）、
-# ATOM_ROOT（用哪份 ATOM 代码，默认 ../ATOM）、EXTRA_ARGS（追加给三个服务的参数）。
+# ATOM_ROOT（用哪份 ATOM 代码，默认 ../ATOM）、EXTRA_ARGS（追加给三个服务的参数）、
+# MODES（只测其中几种，如 MODES="native leapquant"）、ROUNDS（性能只跑某几轮，如 ROUNDS=r2）、
+# PERF_PORTS（性能服务的 HTTP 和引擎端口，默认 "8000 8006"）、ACC_PORTS / ACC_EPORTS（精度服务按
+# MODES 顺序用的端口，默认 "8000 8001 8002" / "8006 8016 8026"）：同时跑两份时错开端口。
 set -o pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 cd "$HERE"
 MODEL=/shareddata/haoyanli/Qwen/Qwen3.8-Flash-Next
 ATOM_ROOT=${ATOM_ROOT:-$(dirname "$HERE")/ATOM}
 QOUT=${QOUT:-$(dirname "$HERE")/qwen_eval/compare_naive}
-MODES="native replayssm leapquant"
+MODES=${MODES:-"native replayssm leapquant"}
 PERF_GPUS=${PERF_GPUS:-4,5}
 ACC_GPUS=${ACC_GPUS:-"0,1 2,3 4,5"}
 CONC=${CONC:-"32 64 128 256 512"}
@@ -192,8 +195,9 @@ sweep() {
 }
 
 perf() {
-  local r m order out
-  for r in r1 r2; do
+  local r m order out sport eport
+  read -r sport eport <<< "${PERF_PORTS:-8000 8006}"
+  for r in ${ROUNDS:-r1 r2}; do
     order=$MODES
     [ $r = r2 ] && order=$(echo $MODES | awk '{for (i = NF; i > 0; i--) printf "%s ", $i}')
     for m in $order; do
@@ -205,7 +209,7 @@ perf() {
       # 稳态步时取自这次服务的日志，所以没测完的一轮整轮重测
       rm -rf -- "$QOUT/perf/$m-$r"
       log "perf $m-$r: start on GPUs $PERF_GPUS"
-      drive $m perf $PERF_GPUS 8000 8006 perf-$m-$r sweep 8000 "$out" > "$LOGS/sweep-$m-$r.log" 2>&1
+      drive $m perf $PERF_GPUS $sport $eport perf-$m-$r sweep $sport "$out" > "$LOGS/sweep-$m-$r.log" 2>&1
       log "perf $m-$r: $(grep -E 'did not come up|does not show|engine died|job exit' "$LOGS/sweep-$m-$r.log" | tail -n 1)"
     done
   done
@@ -260,7 +264,8 @@ acc_job() {   # acc_job PORT TAG：先 GSM8K，再 AIME/GPQA
 }
 
 accuracy() {
-  local gpus=($ACC_GPUS) sports=(8000 8001 8002) eports=(8006 8016 8026) i=0 m pids=()
+  local gpus=($ACC_GPUS) sports=(${ACC_PORTS:-8000 8001 8002}) eports=(${ACC_EPORTS:-8006 8016 8026})
+  local i=0 m pids=()
   for m in $MODES; do
     if acc_done "$m"; then
       log "accuracy $m: done already"
